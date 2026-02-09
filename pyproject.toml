@@ -1,0 +1,80 @@
+[project]
+name = "agentic-tutor"
+version = "0.1.0"
+description = "Agent-based learning system with separate Constructor and Tutor workflows"
+authors = [{name = "Agentic Tutor Team"}]
+requires = ">=3.11"
+readme = "README.md"
+
+[tool.poetry]
+packages = [
+    {extras = ["all"], version = "^2.0.0"},
+]
+
+[tool.poetry.group.dev]
+dependencies = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0.0",
+]
+
+[build.system]
+requires = ["setuptools>=61.0.0"]
+
+[project.urls]
+# Add your project urls below
+
+# Django backend
+# urls = ["http://localhost:8000/"]
+
+[tool.setuptools]
+packages = ["backend.app"]
+
+[tool.poetry.dev-dependencies]
+# Z.AI API - OpenAI compatible
+# https://api.z.ai/guides/develop/openai/python
+openai>=1.0.0
+
+# FastAPI + Server
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.5
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+# Database (SQLAlchemy + MySQL)
+sqlalchemy>=2.0.0
+pymysql>=1.0.0
+alembic>=1.12.0
+
+# LangChain + LangGraph
+langchain>=0.3.0
+langgraph>=0.2.0
+langchain-community>=0.3.0
+
+# Vector Database
+chromadb>=0.4.0
+llama-index>=0.10.0
+
+# File processing
+pypdf>=3.0.0
+python-docx>=0.8.0
+python-pptx>=0.6.0
+
+# Authentication
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=2.0.0
+
+# Environment
+python-dotenv>=1.0.0
+pydantic[email]>=2.0.0
+
+# Async HTTP
+httpx>=0.24.0
+
+# Testing
+pytest-asyncio>=0.21.0
+pytest-mock>=3.10.0
+pytest-cov>=4.0.0
