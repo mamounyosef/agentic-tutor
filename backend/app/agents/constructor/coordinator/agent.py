@@ -12,17 +12,18 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, StateGraph
 
 from ....core.config import get_settings
+from ..orchestration import ConstructorOrchestrator, get_orchestrator
 from ..state import ConstructorState, create_initial_constructor_state
 from .nodes import (
-    welcome_node,
-    intake_node,
-    route_action_node,
     dispatch_node,
-    respond_node,
     finalize_node,
+    intake_node,
+    respond_node,
+    route_action_node,
     route_by_phase,
-    should_continue,
     route_subagent,
+    should_continue,
+    welcome_node,
 )
 
 logger = logging.getLogger(__name__)
@@ -69,12 +70,11 @@ class CoordinatorGraph:
         graph.add_node("respond", respond_node)
         graph.add_node("finalize", finalize_node)
 
-        # Sub-agent placeholder nodes (will be replaced with actual subgraphs)
-        # For now, these just pass through to respond
-        graph.add_node("ingestion", self._create_subagent_passthrough("ingestion"))
-        graph.add_node("structure", self._create_subagent_passthrough("structure"))
-        graph.add_node("quiz", self._create_subagent_passthrough("quiz"))
-        graph.add_node("validation", self._create_subagent_passthrough("validation"))
+        # Sub-agent nodes (now with actual invocation)
+        graph.add_node("ingestion", self._create_ingestion_node())
+        graph.add_node("structure", self._create_structure_node())
+        graph.add_node("quiz", self._create_quiz_node())
+        graph.add_node("validation", self._create_validation_node())
 
         # Set entry point
         graph.set_entry_point("welcome")
@@ -128,19 +128,45 @@ class CoordinatorGraph:
 
         return graph.compile(checkpointer=self.checkpointer)
 
-    def _create_subagent_passthrough(self, agent_name: str):
-        """Create a passthrough node for sub-agents (placeholder)."""
-        async def passthrough(state: ConstructorState) -> Dict[str, Any]:
-            logger.info(f"Sub-agent '{agent_name}' invoked (placeholder)")
-            # Update state to indicate sub-agent completed
-            return {
-                "current_agent": "coordinator",
-                "subagent_results": {
-                    **state.get("subagent_results", {}),
-                    agent_name: {"status": "completed", "message": f"{agent_name} processing complete"},
-                },
-            }
-        return passthrough
+    def _create_ingestion_node(self):
+        """Create the ingestion sub-agent node."""
+        async def ingestion_node(state: ConstructorState) -> Dict[str, Any]:
+            logger.info(f"Ingestion sub-agent invoked for session {self.session_id}")
+            orchestrator = get_orchestrator(self.session_id, self.checkpointer)
+            result = await orchestrator.invoke_ingestion(state)
+            result["current_agent"] = "coordinator"
+            return result
+        return ingestion_node
+
+    def _create_structure_node(self):
+        """Create the structure sub-agent node."""
+        async def structure_node(state: ConstructorState) -> Dict[str, Any]:
+            logger.info(f"Structure sub-agent invoked for session {self.session_id}")
+            orchestrator = get_orchestrator(self.session_id, self.checkpointer)
+            result = await orchestrator.invoke_structure(state)
+            result["current_agent"] = "coordinator"
+            return result
+        return structure_node
+
+    def _create_quiz_node(self):
+        """Create the quiz sub-agent node."""
+        async def quiz_node(state: ConstructorState) -> Dict[str, Any]:
+            logger.info(f"Quiz sub-agent invoked for session {self.session_id}")
+            orchestrator = get_orchestrator(self.session_id, self.checkpointer)
+            result = await orchestrator.invoke_quiz(state)
+            result["current_agent"] = "coordinator"
+            return result
+        return quiz_node
+
+    def _create_validation_node(self):
+        """Create the validation sub-agent node."""
+        async def validation_node(state: ConstructorState) -> Dict[str, Any]:
+            logger.info(f"Validation sub-agent invoked for session {self.session_id}")
+            orchestrator = get_orchestrator(self.session_id, self.checkpointer)
+            result = await orchestrator.invoke_validation(state)
+            result["current_agent"] = "coordinator"
+            return result
+        return validation_node
 
     async def invoke(
         self,
