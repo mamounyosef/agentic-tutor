@@ -736,16 +736,432 @@ Each orchestrator method:
 
 # WORKFLOW 2: TUTOR (Student Learning)
 
-*Note: This workflow will be implemented in Phase 5-6. Documentation will be added when implemented.*
+## Overview
+
+The Tutor workflow enables students to learn courses through adaptive AI-powered tutoring sessions.
+
+**Entry Point:** Session Coordinator Agent
+**Exit Condition:** Session ended (time limit, goal achieved, or student request)
+**State Storage:** LangGraph Checkpointer (SQLite) - single file with thread-based isolation
+
+**Key Design Difference:** Unlike Constructor which uses separate sub-agent graphs, Tutor uses a **single graph with conditional routing** to different modes (explainer, gap_analysis, quiz). This is more efficient for real-time student interaction.
+
+---
+
+## AGENT 1: SESSION COORDINATOR AGENT (Main)
+
+**Purpose:** Guides students through adaptive learning sessions, routes to appropriate modes
+
+**File:** `backend/app/agents/tutor/graph.py`
+
+### State: TutorState
+
+```
+TutorState:
+  # Session
+  session_id: str
+  student_id: int
+  course_id: int
+
+  # Conversation
+  messages: Annotated[List[Dict], add_messages]
+
+  # Learning state
+  current_topic: Optional[TopicInfo]
+  current_unit: Optional[UnitInfo]
+  mastery_snapshot: Dict[int, float]     # topic_id -> mastery (0-1)
+
+  # Session progress
+  session_goal: Optional[str]
+  topics_covered: List[int]              # topic_ids covered this session
+  interactions_count: int
+
+  # Decision state
+  current_mode: str                       # "welcome" | "explainer" | "gap_analysis" | "quiz" | "review" | "end"
+  next_action: str
+  action_rationale: str
+
+  # Student context (cached)
+  student_context: Optional[StudentContext]
+
+  # Knowledge gaps
+  identified_gaps: List[GapInfo]
+  weak_topics: List[int]                  # topic_ids with mastery < 0.5
+
+  # Spaced repetition
+  topics_due_for_review: List[int]        # topic_ids not reviewed in 7+ days
+
+  # Quiz state (hard-coded assessment, NO LLM)
+  current_quiz: Optional[Dict]
+  quiz_position: int
+  quiz_score: float
+  quiz_start_time: Optional[str]
+  quiz_completed: bool
+
+  # Explanation state
+  explanation_given: Optional[str]
+  examples_used: List[str]
+
+  # Navigation state
+  current_content_position: Optional[str]  # "video_123", "topic_45", etc.
+  content_progress: Dict[str, float]       # content_id -> progress (0-1)
+
+  # Session control
+  should_end: bool
+  end_reason: Optional[str]
+  session_summary: Optional[str]
+
+  # Timestamps
+  session_started_at: str
+  last_activity_at: str
+```
+
+### Nodes and Edges
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           SESSION COORDINATOR                               │
+│                                                                              │
+│  ┌────────────────┐                                                         │
+│  │    WELCOME     │  Load mastery snapshot, student context                  │
+│  │     NODE       │  Generate personalized welcome message                   │
+│  │                │  Identify weak topics and spaced repetition needs       │
+│  └────────┬───────┘                                                         │
+│           │                                                                 │
+│           ▼                                                                 │
+│  ┌────────────────┐    ┌─────────────────────────────────────────────────┐ │
+│  │    INTAKE      │    │ Process student input, determine next action      │ │
+│  │     NODE       │    │                                                  │ │
+│  └────────┬───────┘    │ route_by_action():                               │ │
+│           │            │  - "quiz" keyword → quiz mode                     │ │
+│           │            │  - "help/stuck" → clarify mode (explainer)        │ │
+│           │            │  - "review" → review mode (explainer)             │ │
+│           │            │  - "gap/weak" → gap_analysis mode                 │ │
+│           │            │  - "bye/done" → end session                       │ │
+│           │            │  - else → LLM decides based on context            │ │
+│           │            └─────────────────────────────────────────────────┘ │
+│           │                                                                 │
+│           └─────────────┬───────────────────┬──────────────┬────────────┐  │
+│                         │                   │              │            │  │
+│                         ▼                   ▼              ▼            ▼  │
+│              ┌─────────────────┐  ┌─────────────┐  ┌─────────┐  ┌──────────┐│
+│              │   EXPLAINER     │  │ GAP_        │  │  QUIZ   │  │SUMMARIZE  ││
+│              │     NODE        │  │ ANALYSIS    │  │  NODE   │  │   NODE    ││
+│              │                 │  │  NODE       │  │         │  │          ││
+│              │Teach new topics │  │Identify     │  │Present  │  │Generate  ││
+│              │Review material  │  │knowledge    │  │questions│  │session   ││
+│              │Clarify confusion│  │gaps         │  │(hard-   │  │summary   ││
+│              │                 │  │Prioritize   │  │coded)   │  │End       ││
+│              │Uses RAG for     │  │remediation  │  │         │  │session   ││
+│              │content          │  │             │  │         │  │          ││
+│              │Adapts to        │  │             │  │         │  │          ││
+│              │student state    │  │             │  │         │  │          ││
+│              └────────┬────────┘  └──────┬──────┘  └────┬────┘  └────┬─────┘│
+│                       │                  │              │             │        │
+│                       │         ┌────────┴─────────┐    │             │        │
+│                       │         │                  │    │             │        │
+│                       │         ▼                  ▼    ▼             │        │
+│                       │  ┌─────────────────┐  ┌─────────┐           │        │
+│                       │  │ Check every     │  │GRADE_   │           │        │
+│                       │  │ 3rd interaction │  │QUIZ     │           │        │
+│                       │  └───────┬─────────┘  │NODE     │           │        │
+│                       │          │             │(hard-   │           │        │
+│                       │          │             │coded)   │           │        │
+│                       │          │             └────┬────┘           │        │
+│                       │          │                  │                │        │
+│                       │          │         ┌────────┴─────────┐      │        │
+│                       │          │         ▼                  ▼      │        │
+│                       │          │    ┌─────────┐       ┌─────────┐│        │
+│                       │          │    │ More    │       │ All     ││        │
+│                       │          │    │questions│       │done     ││        │
+│                       │          │    └────┬────┘       └────┬────┘│        │
+│                       │          │         │                  │     │        │
+│                       │          └─────────┴──────────────────┘     │        │
+│                       │                                        │        │
+│                       └────────────────────────────────────────┘        │
+│                                                                │        │
+│                                                                ▼        │
+│  ┌─────────────────────────────────────────────────────────────┐      │
+│  │                    should_continue()                        │      │
+│  │                                                              │      │
+│  │  Checks:                                                     │      │
+│  │  - should_end == True? (student requested)                   │      │
+│  │  - elapsed_time > 60 minutes? (max session)                  │      │
+│  │                                                              │      │
+│  │  Returns: "continue" or "end"                                │      │
+│  └──────────────────────────────┬───────────────────────────────┘      │
+│                                 │                                       │
+│                     ┌───────────┴─────────┐                             │
+│                     ▼                     ▼                             │
+│              ┌─────────────┐         ┌─────────────┐                       │
+│              │  continue   │         │     end     │                       │
+│              │   (loop)    │         │             │                       │
+│              └─────────────┘         └─────────────┘                       │
+│                     │                     │                               │
+│                     ▼                     ▼                               │
+│                ┌─────────┐           ┌─────────┐                            │
+│                │ INTAKE  │           │  END    │                            │
+│                └─────────┘           └─────────┘                            │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Mode: Explainer (Teach/Review/Clarify)
+
+**Purpose:** Provide personalized explanations using RAG from course content
+
+**Personality Adaptation:**
+
+| Student State | Personality | Behavior |
+|--------------|-------------|----------|
+| Struggling (mastery < 0.5, negative sentiment) | Extra Supportive | Simple language, more examples, validates effort |
+| Confident (mastery > 0.7, positive sentiment) | Concise & Challenging | Advanced terms, faster pace, deeper questions |
+| Bored (low engagement feedback) | Engaging | Interesting analogies, surprising facts |
+| Frustrated (negative feedback) | Patient & Reassuring | Acknowledge frustration, break down problems |
+| Neutral | Balanced | Clear explanations, appropriate pace |
+
+**Sub-modes:**
+
+1. **Teach Mode:** New topic introduction
+   - Retrieves course content via RAG
+   - Adapts explanation to student's learning style
+   - Provides examples relevant to student interests
+
+2. **Review Mode:** Spaced repetition
+   - Topics not reviewed in 7+ days
+   - Focuses on key concepts
+   - Connects to related topics
+
+3. **Clarify Mode:** Address confusion
+   - Uses different approach than before
+   - Provides alternative explanations
+   - Checks understanding with follow-up question
+
+### Mode: Gap Analysis
+
+**Purpose:** Identify and prioritize knowledge gaps
+
+**Process:**
+1. Get mastery snapshot across all topics
+2. Identify topics with mastery < 0.5 (threshold)
+3. Check prerequisite chains
+4. Prioritize based on:
+   - Criticality (blocks other learning)
+   - Impact (prerequisite for upcoming topics)
+   - Student confidence (balance challenging/achievable)
+5. Generate remediation plan
+
+**Output:**
+```python
+identified_gaps = [
+    {
+        "topic_id": 5,
+        "topic_title": "Linear Regression",
+        "current_mastery": 0.3,
+        "required_mastery": 0.7,
+        "priority": "critical",
+        "is_prerequisite_for": [7, 8, 9]
+    },
+    ...
+]
+```
+
+### Mode: Quiz (Hard-coded Assessment)
+
+**Purpose:** Administer quizzes and grade answers (NO LLM for cost/speed)
+
+**Process:**
+1. Select topics (weak_topics or current_topic)
+2. Get questions from quiz bank (pre-generated by Constructor)
+3. Present question to student
+4. Grade answer using string comparison (hard-coded)
+5. Record attempt and update mastery
+6. Show results with time taken
+
+**Grading (Hard-coded):**
+
+| Question Type | Grading Method |
+|--------------|----------------|
+| Multiple Choice | Direct string match (A/B/C/D) |
+| True/False | Direct string match (true/false) |
+| Short Answer | Simple keyword matching |
+
+**Quiz Results Display:**
+```
+📊 Quiz Results!
+
+You scored: 4/5 (80%)
+Time taken: 45 seconds
+
+🎉 Excellent work!
+
+Would you like to:
+- Review the topics you missed
+- Try another quiz
+- Move on to new content
+- End the session
+```
+
+### Routing Logic
+
+**route_by_action():**
+```python
+action = state.get("next_action", "teach")
+
+if action in ["teach", "review", "clarify"]:
+    return "explainer"
+elif action == "gap_analysis":
+    return "gap_analysis"
+elif action == "quiz":
+    return "quiz"
+elif action == "summarize":
+    return "summarize"
+else:
+    return "intake"  # Loop for more input
+```
+
+**route_after_explainer():**
+```python
+# Every 3rd interaction, suggest a quiz
+if state["interactions_count"] % 3 == 0:
+    return "quiz"
+else:
+    return "intake"
+```
+
+**route_after_quiz():**
+```python
+if not state["quiz_completed"]:
+    return "grade"  # Grade current answer
+elif more_questions_remaining:
+    return "quiz"   # Next question
+else:
+    return "intake"  # Back to conversation
+```
+
+**should_continue():**
+```python
+if state.get("should_end", False):
+    return "end"
+elif calculate_time_elapsed(state) > 60:  # 60 minute max
+    return "end"
+else:
+    return "continue"
+```
+
+---
+
+## TUTOR WORKFLOW: COMPLETE FLOW
+
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│  STUDENT    │────►│COORDINATOR  │────►│  EXPLAINER  │────►│   RAG       │
+│  (Human)    │     │  AGENT      │     │   MODE      │     │  RETRIEVAL  │
+│             │     │             │     │             │     │             │
+│ Asks        │     │ Routes to   │     │ Provides    │     │ Gets course │
+│ questions   │     │ appropriate │     │ personalized│     │ content     │
+│ Gives       │     │ mode based  │     │ explanations│     │ Gets student│
+│ feedback    │     │ on state    │     │ Adapts to   │     │ context     │
+│ Takes quizzes│     │ Tracks      │     │ sentiment   │     │             │
+│             │     │ progress    │     │ learning    │     │             │
+└─────────────┘     └──────┬──────┘     └──────┬──────┘     └──────┬──────┘
+                          │                   │                   │
+                          │◄───────────────────┴───────────────────┤
+                          │     Returns to Coordinator with     │
+                          │     explanation and updated state   │
+                          │                                     │
+                          ▼                                     │
+                   ┌─────────────┐                            │
+                   │ GAP_ANALYSIS │◄───────────────────────────┤
+                   │   MODE      │                              │
+                   │             │                              │
+                   │ Identifies  │                              │
+                   │ knowledge   │                              │
+                   │ gaps       │                              │
+                   │ Prioritizes│                              │
+                   │ learning   │                              │
+                   └──────┬──────┘                              │
+                          │                                     │
+                          │◄──────────────────────────────────────┤
+                          │     Returns gap analysis and plan    │
+                          │                                     │
+                          ▼                                     │
+                   ┌─────────────┐                            │
+                   │   QUIZ      │                            │
+                   │   MODE      │                            │
+                   │             │                            │
+                   │ Hard-coded  │                            │
+                   │ grading     │                            │
+                   │ No LLM      │                            │
+                   └──────┬──────┘                            │
+                          │                                     │
+                          │◄──────────────────────────────────────┤
+                          │     Returns quiz results and score    │
+                          │                                     │
+                          ▼                                     │
+                   ┌─────────────┐                            │
+                   │  SUMMARIZE  │                            │
+                   │    MODE     │                            │
+                   │             │                            │
+                   │ Shows       │                            │
+                   │ progress    │                            │
+                   │ Ends        │                            │
+                   │ session     │                            │
+                   └──────┬──────┘                            │
+                          │                                     │
+                          ▼                                     │
+                   ┌─────────────┐                            │
+                   │    END      │                            │
+                   └─────────────┘                            │
+```
+
+---
+
+## MEMORY AND CHECKPOINTING
+
+### Constructor Checkpointing
+- **Location:** `./checkpoints/constructor/session_{session_id}.db`
+- **One file per construction session**
+- **Stores:** Conversation history, construction state, uploaded files, progress
+
+### Tutor Checkpointing
+- **Location:** `./checkpoints/tutor/tutor_sessions.db`
+- **Single file for all sessions**
+- **Thread-based isolation** (thread_id = session_id)
+- **Stores:** Conversation history, mastery snapshot, current topic, quiz state
+
+---
+
+## VECTOR DB COLLECTIONS
+
+### Constructor Vector DB (Per Course)
+```
+/course_{id}/
+├── content_chunks    # All material chunks with embeddings
+├── topics            # Topic summaries
+├── quiz_questions    # Quiz with embeddings for similarity
+└── structure         # Course structure metadata
+```
+
+### Student Vector DBs (Per Student, Per Course)
+```
+/student_{id}/course_{id}/
+├── qna_history       # Student's Q&A for personalization
+├── explanations      # Cached explanations
+├── misconceptions    # Common mistakes for this student
+├── learning_style    # Preference data
+├── feedback          # Student feelings about course
+└── interactions      # All student interactions for context
+```
 
 ---
 
 # WORKFLOW DOCUMENTATION VERSION
 
-- **Version:** 1.1
+- **Version:** 2.0
 - **Last Updated:** 2025-02-10
 - **Constructor Workflow Status:** 5/5 Agents Complete (Coordinator ✅, Ingestion ✅, Structure ✅, Quiz ✅, Validation ✅, Orchestration ✅)
-- **Tutor Workflow Status:** Not Started
+- **Tutor Workflow Status:** 1/1 Agent Complete (Session Coordinator ✅ with Explainer/GapAnalysis/Quiz modes)
 
 ---
 
