@@ -5,6 +5,8 @@ This manages ChromaDB collections for a student's personal data:
 - explanations: Cached explanations
 - misconceptions: Common mistakes for this student
 - learning_style: Preference data
+- feedback: Student feelings about course/difficulty/pace
+- interactions: All student interactions for context
 """
 
 import os
@@ -37,6 +39,8 @@ class StudentVectorStore:
     COLLECTION_EXPLANATIONS = "explanations"
     COLLECTION_MISCONCEPTIONS = "misconceptions"
     COLLECTION_LEARNING_STYLE = "learning_style"
+    COLLECTION_FEEDBACK = "feedback"  # Student feelings about course
+    COLLECTION_INTERACTIONS = "interactions"  # All interactions for context
 
     def __init__(self, student_id: int, settings: Settings | None = None):
         """
@@ -381,6 +385,234 @@ class StudentVectorStore:
         return None
 
     # ==================================================================
+    # Feedback Methods (Student Feelings)
+    # ==================================================================
+
+    async def record_feedback(
+        self,
+        student_id: int,
+        course_id: int,
+        feedback_type: str,  # difficulty, pace, clarity, engagement, overall
+        feedback_value: str,  # Free text or rating
+        sentiment: Optional[str] = None,  # positive, neutral, negative
+        topic_id: Optional[int] = None
+    ) -> str:
+        """
+        Record student feedback about the course.
+
+        Captures feelings like:
+        - "This is too hard"
+        - "I'm bored, go faster"
+        - "I don't understand this topic"
+        - "This is great!"
+
+        Used for personalization and adapting to student needs.
+        """
+        vector_store = self.get_vector_store(student_id, course_id, self.COLLECTION_FEEDBACK)
+
+        feedback_id = f"feed_{student_id}_{course_id}_{feedback_type}_{int(__import__('time').time())}"
+
+        metadata = {
+            "student_id": str(student_id),
+            "course_id": str(course_id),
+            "feedback_type": feedback_type,
+            "timestamp": str(__import__('time').time()),
+        }
+
+        if sentiment:
+            metadata["sentiment"] = sentiment
+        if topic_id:
+            metadata["topic_id"] = str(topic_id)
+
+        vector_store.add_texts(
+            texts=[feedback_value],
+            metadatas=[metadata],
+            ids=[feedback_id]
+        )
+
+        return feedback_id
+
+    async def get_recent_feedback(
+        self,
+        student_id: int,
+        course_id: int,
+        feedback_type: Optional[str] = None,
+        limit: int = 10
+    ) -> List[Dict[str, Any]]:
+        """Get recent feedback from the student."""
+        collection = self.get_or_create_collection(student_id, course_id, self.COLLECTION_FEEDBACK)
+
+        where = {"student_id": str(student_id), "course_id": str(course_id)}
+        if feedback_type:
+            where["feedback_type"] = feedback_type
+
+        try:
+            results = collection.get(where=where, limit=limit)
+
+            formatted = []
+            for doc in results:
+                formatted.append({
+                    "id": doc.id,
+                    "content": doc.metadata.get("page_content", ""),
+                    "metadata": doc.metadata
+                })
+
+            return formatted
+        except Exception:
+            return []
+
+    async def get_student_sentiment_summary(
+        self,
+        student_id: int,
+        course_id: int
+    ) -> Dict[str, Any]:
+        """
+        Get a summary of student's recent sentiment about the course.
+
+        Returns overall sentiment and specific issues/concerns.
+        """
+        collection = self.get_or_create_collection(student_id, course_id, self.COLLECTION_FEEDBACK)
+
+        try:
+            results = collection.get(
+                where={"student_id": str(student_id), "course_id": str(course_id)},
+                limit=50
+            )
+
+            positive = 0
+            negative = 0
+            neutral = 0
+            concerns = []
+
+            for doc in results:
+                metadata = doc.metadata
+                sentiment = metadata.get("sentiment", "neutral")
+                feedback_type = metadata.get("feedback_type", "")
+                content = doc.metadata.get("page_content", "")
+
+                if sentiment == "positive":
+                    positive += 1
+                elif sentiment == "negative":
+                    negative += 1
+                    # Track negative feedback for follow-up
+                    if feedback_type in ["difficulty", "clarity"]:
+                        concerns.append({
+                            "type": feedback_type,
+                            "content": content,
+                        })
+                else:
+                    neutral += 1
+
+            total = positive + negative + neutral
+            overall_sentiment = "neutral"
+            if total > 0:
+                positive_ratio = positive / total
+                negative_ratio = negative / total
+                if positive_ratio > 0.6:
+                    overall_sentiment = "positive"
+                elif negative_ratio > 0.4:
+                    overall_sentiment = "negative"
+
+            return {
+                "overall_sentiment": overall_sentiment,
+                "positive_count": positive,
+                "negative_count": negative,
+                "neutral_count": neutral,
+                "concerns": concerns,
+                "total_feedback": total,
+            }
+
+        except Exception:
+            return {
+                "overall_sentiment": "neutral",
+                "positive_count": 0,
+                "negative_count": 0,
+                "neutral_count": 0,
+                "concerns": [],
+                "total_feedback": 0,
+            }
+
+    # ==================================================================
+    # Interaction Methods (General Context)
+    # ==================================================================
+
+    async def record_interaction(
+        self,
+        student_id: int,
+        course_id: int,
+        interaction_type: str,  # question, explanation, quiz, hint, review, video_progress
+        content: str,
+        topic_id: Optional[int] = None,
+        additional_metadata: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """
+        Record a general interaction with the student.
+
+        This provides full context for the AI to understand:
+        - What has the student done?
+        - When did they do it?
+        - How did they respond?
+        - What's their engagement level?
+
+        Used for:
+        - Contextualizing current questions
+        - Understanding learning patterns
+        - Identifying when to intervene
+        """
+        vector_store = self.get_vector_store(student_id, course_id, self.COLLECTION_INTERACTIONS)
+
+        interaction_id = f"inter_{student_id}_{course_id}_{int(__import__('time').time())}"
+
+        metadata = {
+            "student_id": str(student_id),
+            "course_id": str(course_id),
+            "interaction_type": interaction_type,
+            "timestamp": str(__import__('time').time()),
+        }
+
+        if topic_id:
+            metadata["topic_id"] = str(topic_id)
+        if additional_metadata:
+            metadata.update({k: str(v) for k, v in additional_metadata.items()})
+
+        vector_store.add_texts(
+            texts=[content],
+            metadatas=[metadata],
+            ids=[interaction_id]
+        )
+
+        return interaction_id
+
+    async def get_recent_interactions(
+        self,
+        student_id: int,
+        course_id: int,
+        interaction_type: Optional[str] = None,
+        limit: int = 20
+    ) -> List[Dict[str, Any]]:
+        """Get recent interactions for context."""
+        collection = self.get_or_create_collection(student_id, course_id, self.COLLECTION_INTERACTIONS)
+
+        where = {"student_id": str(student_id), "course_id": str(course_id)}
+        if interaction_type:
+            where["interaction_type"] = interaction_type
+
+        try:
+            results = collection.get(where=where, limit=limit)
+
+            formatted = []
+            for doc in results:
+                formatted.append({
+                    "id": doc.id,
+                    "content": doc.metadata.get("page_content", ""),
+                    "metadata": doc.metadata
+                })
+
+            return formatted
+        except Exception:
+            return []
+
+    # ==================================================================
     # Utility Methods
     # ==================================================================
 
@@ -407,6 +639,8 @@ class StudentVectorStore:
                     self.COLLECTION_EXPLANATIONS,
                     self.COLLECTION_MISCONCEPTIONS,
                     self.COLLECTION_LEARNING_STYLE,
+                    self.COLLECTION_FEEDBACK,
+                    self.COLLECTION_INTERACTIONS,
                 ]
 
                 for coll_name in collections:
