@@ -81,8 +81,9 @@ class Settings(BaseSettings):
 
     # File Storage
     UPLOAD_DIR: str = "./uploads/materials"
-    MAX_UPLOAD_SIZE: int = 10485760  # 10MB in bytes
-    ALLOWED_EXTENSIONS: List[str] = [".pdf", ".ppt", ".pptx", ".doc", ".docx", ".txt"]
+    UPLOAD_PATH: str = "./uploads"  # Base upload path
+    MAX_UPLOAD_SIZE: int = 524288000  # 500MB in bytes (for large courses with videos)
+    ALLOWED_EXTENSIONS: List[str] = [".pdf", ".ppt", ".pptx", ".doc", ".docx", ".txt", ".mp4", ".mov", ".avi", ".mkv"]
 
     # Logging
     LOG_LEVEL: str = "INFO"
