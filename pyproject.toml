@@ -63,6 +63,9 @@ pypdf>=3.0.0
 python-docx>=0.8.0
 python-pptx>=0.6.0
 
+# Video Transcription (faster-whisper with GPU optimization)
+faster-whisper>=1.0.0
+
 # Authentication
 python-jose[cryptography]>=3.3.0
 passlib[bcrypt]>=2.0.0

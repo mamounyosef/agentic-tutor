@@ -179,63 +179,117 @@ def ingest_ppt(file_path: str, course_id: int) -> Dict[str, Any]:
 # =============================================================================
 
 @tool
-def ingest_video(
+async def ingest_video(
     file_path: str,
     course_id: int,
     transcript: Optional[str] = None,
+    force_transcribe: bool = False,
 ) -> Dict[str, Any]:
     """
-    Process a video file. If transcript is provided, uses it directly.
+    Process a video file and extract full transcription.
 
-    Note: Video transcription requires external services (Whisper, etc.)
-    This tool expects pre-transcribed text or returns metadata only.
+    The video file is stored AS-IS for student viewing.
+    The transcription is extracted for:
+    - RAG searchability (find relevant content)
+    - Quiz generation (questions from video content)
+    - Student assessment (did they understand the video?)
+    - Progress tracking (what did they learn from videos?)
+
+    Transcription is performed using the configured service (OpenAI Whisper API by default).
+    If a transcript is provided, it will be used directly unless force_transcribe=True.
 
     Args:
-        file_path: Path to the video file
+        file_path: Path to the video file (mp4, webm, mov, avi, etc.)
         course_id: ID of the course this file belongs to
-        transcript: Optional pre-transcribed text
+        transcript: Optional pre-transcribed text (used if provided)
+        force_transcribe: Force re-transcription even if transcript provided
 
     Returns:
-        Dictionary with content (if transcript provided) and metadata
+        Dictionary with:
+            - success: Whether ingestion succeeded
+            - file_id: Unique identifier for the file
+            - file_type: "video"
+            - content: Full transcription text
+            - metadata: Including duration, language, segments with timestamps
     """
     try:
         file_id = hashlib.md5(file_path.encode()).hexdigest()[:12]
 
-        # Get basic video metadata
+        # Basic metadata
         metadata = {
             "course_id": course_id,
             "original_filename": Path(file_path).name,
             "file_size": os.path.getsize(file_path) if os.path.exists(file_path) else 0,
+            "file_path": file_path,
         }
 
-        if transcript:
+        # If transcript is provided and we're not forcing re-transcription
+        if transcript and not force_transcribe:
+            logger.info(f"Using provided transcript for {file_path}")
             return {
                 "success": True,
                 "file_id": file_id,
                 "file_type": "video",
                 "pages_or_slides": 0,
                 "content": transcript,
-                "metadata": metadata,
+                "metadata": {
+                    **metadata,
+                    "transcript_source": "provided",
+                },
             }
 
-        # Without transcript, return metadata only
+        # Perform transcription
+        from ....core.transcription import transcribe_video
+
+        logger.info(f"Transcribing video: {file_path}")
+        transcription_result = await transcribe_video(file_path)
+
+        # Check for errors
+        if "error" in transcription_result and not transcription_result.get("text"):
+            return {
+                "success": False,
+                "file_id": file_id,
+                "file_type": "video",
+                "pages_or_slides": 0,
+                "content": "",
+                "metadata": metadata,
+                "error": transcription_result.get("error", "Transcription failed"),
+                "warning": "Video transcription failed. Content not available for RAG.",
+            }
+
+        # Successful transcription
+        transcript_text = transcription_result.get("text", "")
+        metadata.update({
+            "duration": transcription_result.get("duration", 0),
+            "language": transcription_result.get("language"),
+            "segments": transcription_result.get("segments", []),
+            "transcript_source": transcription_result.get("service", "unknown"),
+        })
+
+        logger.info(
+            f"Video transcription complete: {len(transcript_text)} chars, "
+            f"{metadata['duration']}s, language={metadata['language']}"
+        )
+
         return {
             "success": True,
             "file_id": file_id,
             "file_type": "video",
             "pages_or_slides": 0,
-            "content": "",
+            "content": transcript_text,
             "metadata": metadata,
-            "warning": "No transcript provided. Video content not extracted.",
         }
 
     except Exception as e:
         logger.error(f"Error ingesting video {file_path}: {e}")
         return {
             "success": False,
-            "error": str(e),
+            "file_id": file_id if "file_id" in locals() else "",
+            "file_type": "video",
+            "pages_or_slides": 0,
             "content": "",
             "metadata": {},
+            "error": str(e),
         }
 
 

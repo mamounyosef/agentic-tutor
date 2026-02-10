@@ -94,6 +94,16 @@ class Settings(BaseSettings):
     MASTERY_MIN_SCORE: float = 0.7
     SPACED_REPETITION_DAYS: int = 7
 
+    # Video Transcription (faster-whisper with GPU optimization)
+    TRANSCRIPTION_SERVICE: str = "whisper_local"  # "whisper_local" for GPU, "openai" for API
+    TRANSCRIPTION_MODEL_SIZE: str = "base"  # tiny, base, small, medium, large-v2, large-v3
+    TRANSCRIPTION_DEVICE: str = "cuda"  # "cuda" for GPU (RTX 4060), "cpu" as fallback
+    TRANSCRIPTION_COMPUTE_TYPE: str = "float16"  # float16 for GPU, int8 for CPU, float32 for accuracy
+    TRANSCRIPTION_LANGUAGE: str = "auto"  # "auto" for auto-detect or specific language code (e.g., "en", "es")
+    # OpenAI API fallback (optional, requires API key)
+    TRANSCRIPTION_API_KEY: str = Field(default="", description="OpenAI API key for transcription fallback")
+    TRANSCRIPTION_OPENAI_MODEL: str = "whisper-1"
+
 
 @lru_cache()
 def get_settings() -> Settings:
