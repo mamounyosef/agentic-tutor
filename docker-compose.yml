@@ -1,0 +1,153 @@
+# ==============================================================================
+# AGENTIC TUTOR - Docker Compose Configuration
+# ==============================================================================
+# This file orchestrates all services for the Agentic Tutor platform:
+# - MySQL databases (Constructor and Tutor)
+# - Backend API (FastAPI)
+# - Frontend (Next.js)
+#
+# Usage:
+#   docker-compose up -d              # Start all services
+#   docker-compose up -d db backend   # Start only backend services
+#   docker-compose logs -f            # View logs
+#   docker-compose down               # Stop all services
+# ==============================================================================
+
+version: '3.8'
+
+services:
+  # ==============================================================================
+  # CONSTRUCTOR DATABASE (Course Creators)
+  # ==============================================================================
+  constructor-db:
+    image: mysql:8.0
+    container_name: agentic_tutor_constructor_db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: agentic_tutor_constructor
+      MYSQL_USER: agentic_user
+      MYSQL_PASSWORD: agentic_password
+    ports:
+      - "3307:3306"  # Different port to avoid conflicts
+    volumes:
+      - constructor_db_data:/var/lib/mysql
+      - ./backend/db/constructor/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+    command: --default-authentication-plugin=mysql_native_password
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==============================================================================
+  # TUTOR DATABASE (Students)
+  # ==============================================================================
+  tutor-db:
+    image: mysql:8.0
+    container_name: agentic_tutor_tutor_db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: agentic_tutor_tutor
+      MYSQL_USER: agentic_user
+      MYSQL_PASSWORD: agentic_password
+    ports:
+      - "3308:3306"  # Different port to avoid conflicts
+    volumes:
+      - tutor_db_data:/var/lib/mysql
+      - ./backend/db/tutor/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+    command: --default-authentication-plugin=mysql_native_password
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==============================================================================
+  # BACKEND API (FastAPI)
+  # ==============================================================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: agentic_tutor_backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # Databases
+      CONSTRUCTOR_DB_URL: mysql+pymysql://agentic_user:agentic_password@constructor-db:3306/agentic_tutor_constructor
+      TUTOR_DB_URL: mysql+pymysql://agentic_user:agentic_password@tutor-db:3306/agentic_tutor_tutor
+
+      # Vector DB paths
+      CONSTRUCTOR_VECTOR_DB_PATH: ./data/vector_db/constructor
+      STUDENT_VECTOR_DB_PATH: ./data/vector_db/students
+      COURSE_VECTOR_DB_PATH: ./data/vector_db/courses
+
+      # Checkpoint paths
+      CONSTRUCTOR_CHECKPOINT_PATH: ./checkpoints/constructor
+      TUTOR_CHECKPOINT_PATH: ./checkpoints/tutor
+
+      # LLM Provider (Z.AI)
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.z.ai/api/paas/v4/}
+      LLM_API_KEY: ${LLM_API_KEY}
+      LLM_MODEL: ${LLM_MODEL:-glm-4.7}
+      EMBEDDINGS_BASE_URL: ${EMBEDDINGS_BASE_URL:-https://api.z.ai/api/paas/v4/}
+      EMBEDDINGS_API_KEY: ${EMBEDDINGS_API_KEY}
+      EMBEDDINGS_MODEL: ${EMBEDDINGS_MODEL:-embedding-model}
+
+      # JWT
+      SECRET_KEY: ${SECRET_KEY:-your-super-secret-key-change-in-production}
+      ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: 1440
+
+      # CORS
+      CORS_ORIGINS: http://localhost:3000,http://frontend:3000
+
+      # App Settings
+      APP_ENV: ${APP_ENV:-development}
+      DEBUG: ${DEBUG:-true}
+    volumes:
+      - ./backend:/app
+      - backend_data:/app/data
+      - backend_uploads:/app/uploads
+      - backend_checkpoints:/app/checkpoints
+    depends_on:
+      constructor-db:
+        condition: service_healthy
+      tutor-db:
+        condition: service_healthy
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # ==============================================================================
+  # FRONTEND (Next.js)
+  # ==============================================================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: agentic_tutor_frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+      NODE_ENV: development
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - backend
+
+volumes:
+  constructor_db_data:
+  tutor_db_data:
+  backend_data:
+  backend_uploads:
+  backend_checkpoints:
+
+networks:
+  default:
+    name: agentic_tutor_network
