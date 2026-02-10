@@ -11,6 +11,16 @@ from langchain_openai import ChatOpenAI
 from ...core.config import get_settings
 
 
+def _resolve_api_key(base_url: str, api_key: str) -> str:
+    """Provide a safe API key value for local OpenAI-compatible servers."""
+    if api_key:
+        return api_key
+    base = (base_url or "").lower()
+    if "127.0.0.1" in base or "localhost" in base:
+        return "lm-studio"
+    return ""
+
+
 def get_llm(
     temperature: Optional[float] = None,
     model: Optional[str] = None,
@@ -37,7 +47,7 @@ def get_llm(
 
     return ChatOpenAI(
         base_url=settings.LLM_BASE_URL,
-        api_key=settings.LLM_API_KEY,
+        api_key=_resolve_api_key(settings.LLM_BASE_URL, settings.LLM_API_KEY),
         model=model or settings.LLM_MODEL,
         temperature=temperature if temperature is not None else settings.LLM_TEMPERATURE,
         max_tokens=max_tokens or settings.LLM_MAX_TOKENS,

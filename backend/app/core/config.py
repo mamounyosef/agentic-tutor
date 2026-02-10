@@ -1,17 +1,16 @@
 """Configuration settings for Agentic Tutor."""
 
 import secrets
-from functools import lru_cache
 from typing import List
 
-from pydantic import Field, EmailStr
-from pydantic_settings import BaseSettings, SettingsConfig
+from pydantic import Field, EmailStr, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
-    model_config = SettingsConfig(
+    model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
@@ -28,7 +27,7 @@ class Settings(BaseSettings):
 
     # Security
     SECRET_KEY: str = Field(
-        default=secrets.token_urlsafe(32),
+        default_factory=lambda: secrets.token_urlsafe(32),
         min_length=32,
         description="Secret key for JWT encoding"
     )
@@ -37,12 +36,12 @@ class Settings(BaseSettings):
 
     # Database - Constructor
     CONSTRUCTOR_DB_URL: str = Field(
-        default="mysql+pymysql://user:password@localhost:3306/agentic_tutor_constructor"
+        default="mysql+aiomysql://user:password@localhost:3306/agentic_tutor_constructor"
     )
 
     # Database - Tutor
     TUTOR_DB_URL: str = Field(
-        default="mysql+pymysql://user:password@localhost:3306/agentic_tutor_tutor"
+        default="mysql+aiomysql://user:password@localhost:3306/agentic_tutor_tutor"
     )
 
     # Database Pool Settings
@@ -50,18 +49,18 @@ class Settings(BaseSettings):
     DB_MAX_OVERFLOW: int = 20
     DB_POOL_TIMEOUT: int = 30
 
-    # Z.AI LLM
-    LLM_BASE_URL: str = "https://api.z.ai/api/paas/v4/"
-    LLM_API_KEY: str = Field(default="", description="Z.AI API key")
-    LLM_MODEL: str = "glm-4.7"
+    # OpenAI-compatible LLM (LM Studio, Ollama proxy, cloud providers, etc.)
+    LLM_BASE_URL: str = "http://127.0.0.1:1234/v1"
+    LLM_API_KEY: str = Field(default="", description="API key for OpenAI-compatible LLM backend")
+    LLM_MODEL: str = "gemma-3-270m-it"
     LLM_TEMPERATURE: float = 0.7
     LLM_MAX_TOKENS: int = 4096
 
     # Embeddings
-    EMBEDDINGS_BASE_URL: str = "https://api.z.ai/api/paas/v4/"
-    EMBEDDINGS_API_KEY: str = Field(default="", description="Z.AI API key for embeddings")
-    EMBEDDINGS_MODEL: str = "embedding-model"
-    EMBEDDINGS_DIMENSIONS: int = 1536
+    EMBEDDINGS_BASE_URL: str = "http://127.0.0.1:1234/v1"
+    EMBEDDINGS_API_KEY: str = Field(default="", description="API key for OpenAI-compatible embeddings backend")
+    EMBEDDINGS_MODEL: str = "text-embedding-nomic-embed-text-v1.5"
+    EMBEDDINGS_DIMENSIONS: int = 768
 
     # Vector Database - ChromaDB
     CONSTRUCTOR_VECTOR_DB_PATH: str = "./data/vector_db/constructor"
@@ -74,16 +73,16 @@ class Settings(BaseSettings):
     CONSTRUCTOR_CHECKPOINT_PATH: str = "./checkpoints/constructor"
     TUTOR_CHECKPOINT_PATH: str = "./checkpoints/tutor"
 
-    # CORS
-    CORS_ORIGINS: List[str] = ["http://localhost:3000"]
+    # CORS - Accept comma-separated string from .env
+    CORS_ORIGINS: str = "http://localhost:3000"
     CORS_ALLOW_CREDENTIALS: bool = True
-    CORS_ALLOW_HEADERS: List[str] = ["*"]
+    CORS_ALLOW_HEADERS: str = "*"
 
     # File Storage
     UPLOAD_DIR: str = "./uploads/materials"
     UPLOAD_PATH: str = "./uploads"  # Base upload path
     MAX_UPLOAD_SIZE: int = 524288000  # 500MB in bytes (for large courses with videos)
-    ALLOWED_EXTENSIONS: List[str] = [".pdf", ".ppt", ".pptx", ".doc", ".docx", ".txt", ".mp4", ".mov", ".avi", ".mkv"]
+    ALLOWED_EXTENSIONS: str = ".pdf,.ppt,.pptx,.doc,.docx,.txt,.mp4,.mov,.avi,.mkv"
 
     # Logging
     LOG_LEVEL: str = "INFO"
@@ -105,12 +104,39 @@ class Settings(BaseSettings):
     TRANSCRIPTION_API_KEY: str = Field(default="", description="OpenAI API key for transcription fallback")
     TRANSCRIPTION_OPENAI_MODEL: str = "whisper-1"
 
+    @property
+    def cors_origins_list(self) -> List[str]:
+        """Convert CORS_ORIGINS string to a list."""
+        return [origin.strip() for origin in self.CORS_ORIGINS.split(",")]
 
-@lru_cache()
+    @property
+    def cors_allow_headers_list(self) -> List[str]:
+        """Convert CORS_ALLOW_HEADERS string to a list.
+
+        Note: "*" is not valid for allow_headers when credentials are enabled.
+        We return a list of common headers instead.
+        """
+        if self.CORS_ALLOW_HEADERS == "*":
+            return [
+                "accept",
+                "accept-language",
+                "content-language",
+                "content-type",
+                "authorization",
+                "x-requested-with",
+            ]
+        return [header.strip() for header in self.CORS_ALLOW_HEADERS.split(",")]
+
+    @property
+    def allowed_extensions_list(self) -> List[str]:
+        """Convert ALLOWED_EXTENSIONS string to a list."""
+        return [ext.strip() for ext in self.ALLOWED_EXTENSIONS.split(",")]
+
+
 def get_settings() -> Settings:
-    """Get cached settings instance."""
+    """Get settings instance."""
     return Settings()
 
 
-# For convenience
+# For convenience - create fresh instance each time to avoid caching issues
 settings = get_settings()

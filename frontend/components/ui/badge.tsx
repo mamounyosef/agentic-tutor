@@ -1,6 +1,5 @@
 "use client"
 
-import { Badge } from "@/components/ui/badge"
 import * as React from "react"
 import * as ReactPrimitive from "@radix-ui/react-slot"
 import { cva, type VariantProps } from "class-variance-authority"

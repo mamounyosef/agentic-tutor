@@ -8,12 +8,12 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 
-from ....core.config import get_settings
-from ..orchestration import ConstructorOrchestrator, get_orchestrator
-from ..state import ConstructorState, create_initial_constructor_state
+from app.core.config import get_settings
+from app.agents.constructor.orchestration import ConstructorOrchestrator, get_orchestrator
+from app.agents.constructor.state import ConstructorState, create_initial_constructor_state
 from .nodes import (
     dispatch_node,
     finalize_node,
@@ -36,7 +36,7 @@ class CoordinatorGraph:
     Provides a clean interface for interacting with the LangGraph.
     """
 
-    def __init__(self, session_id: str, checkpointer: Optional[SqliteSaver] = None):
+    def __init__(self, session_id: str, checkpointer: Optional[MemorySaver] = None):
         """
         Initialize the Coordinator Graph.
 
@@ -48,14 +48,9 @@ class CoordinatorGraph:
         self.checkpointer = checkpointer or self._create_checkpointer()
         self.graph = self._build_graph()
 
-    def _create_checkpointer(self) -> SqliteSaver:
-        """Create a SQLite checkpointer for session persistence."""
-        settings = get_settings()
-        checkpoint_dir = Path(settings.CONSTRUCTOR_CHECKPOINT_PATH)
-        checkpoint_dir.mkdir(parents=True, exist_ok=True)
-
-        db_path = checkpoint_dir / f"session_{self.session_id}.db"
-        return SqliteSaver.from_conn_string(str(db_path))
+    def _create_checkpointer(self) -> MemorySaver:
+        """Create a memory checkpointer for session persistence."""
+        return MemorySaver()
 
     def _build_graph(self) -> StateGraph:
         """Build the Coordinator Agent graph."""
@@ -205,7 +200,7 @@ class CoordinatorGraph:
         async for event in self.graph.astream(state, config=config):
             yield event
 
-    def get_state(self, config: Optional[Dict[str, Any]] = None) -> ConstructorState:
+    def get_state(self, config: Optional[Dict[str, Any]] = None) -> Optional[ConstructorState]:
         """
         Get the current state from the checkpointer.
 
@@ -213,15 +208,27 @@ class CoordinatorGraph:
             config: Optional configuration
 
         Returns:
-            Current state or None if not found
+            Current state values or None if not found
         """
         config = config or {"configurable": {"thread_id": self.session_id}}
-        return self.graph.get_state(config)
+        try:
+            snapshot = self.graph.get_state(config)
+        except Exception:
+            return None
+
+        if snapshot is None:
+            return None
+
+        # LangGraph returns a StateSnapshot; API handlers expect dict-like state.
+        values = getattr(snapshot, "values", None)
+        if values is None:
+            return None
+        return values
 
 
 def build_coordinator_graph(
     session_id: str,
-    checkpointer: Optional[SqliteSaver] = None,
+    checkpointer: Optional[MemorySaver] = None,
 ) -> CoordinatorGraph:
     """
     Build and return a Coordinator Agent graph.

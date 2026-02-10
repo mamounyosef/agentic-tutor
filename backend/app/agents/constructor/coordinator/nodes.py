@@ -11,9 +11,9 @@ from typing import Any, Dict, Literal
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import END
 
-from ....base.llm import get_llm
-from ....base.utils import messages_to_langchain
-from ..state import ConstructorState, create_initial_constructor_state
+from app.agents.base.llm import get_llm
+from app.agents.base.utils import langchain_to_messages, messages_to_langchain
+from app.agents.constructor.state import ConstructorState, create_initial_constructor_state
 from .prompts import (
     COORDINATOR_SYSTEM_PROMPT,
     NEXT_ACTION_PROMPT,
@@ -241,12 +241,20 @@ async def _extract_course_info(
     """Extract course information from conversation."""
     llm = get_llm(temperature=0.3)
 
+    recent_messages = state["messages"][-4:] if len(state["messages"]) >= 4 else state["messages"]
+    serializable_messages = []
+    for msg in recent_messages:
+        if isinstance(msg, dict):
+            serializable_messages.append(msg)
+        else:
+            serializable_messages.extend(langchain_to_messages([msg]))
+
     extraction_prompt = f"""Analyze the conversation and extract course information.
 
 Current known info: {json.dumps(state.get('course_info', {}))}
 
 Recent messages:
-{json.dumps(state['messages'][-4:] if len(state['messages']) >= 4 else state['messages'])}
+{json.dumps(serializable_messages)}
 
 Extract any mentioned:
 - title: Course title

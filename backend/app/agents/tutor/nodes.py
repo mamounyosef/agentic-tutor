@@ -10,23 +10,23 @@ from typing import Any, Dict, List, Optional
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from ....core.llm import get_llm
-from ....vector.constructor_store import ConstructorVectorStore
-from ....vector.student_store import get_student_store
-from ..tutor.tools.assessment import (
+from app.agents.base.llm import get_llm
+from app.vector.constructor_store import ConstructorVectorStore
+from app.vector.student_store import get_student_store
+from app.agents.tutor.tools.assessment import (
     get_quiz_question,
     get_quiz_questions_batch,
     grade_multiple_choice,
     grade_answer,
 )
-from ..tutor.tools.mastery import (
+from app.agents.tutor.tools.mastery import (
     check_spaced_repetition,
     get_mastery_snapshot,
     get_topic_mastery,
     identify_weak_topics,
     update_mastery_score,
 )
-from ..tutor.tools.rag import (
+from app.agents.tutor.tools.rag import (
     get_student_context,
     get_topic_summary,
     retrieve_for_explanation,

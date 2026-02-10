@@ -33,12 +33,17 @@ def create_app() -> FastAPI:
     )
 
     # CORS middleware
+    cors_origins = settings.cors_origins_list
+    cors_headers = settings.cors_allow_headers_list
+    print(f"DEBUG: CORS origins: {cors_origins}")
+    print(f"DEBUG: CORS headers: {cors_headers}")
+
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.CORS_ORIGINS,
+        allow_origins=cors_origins,
         allow_credentials=settings.CORS_ALLOW_CREDENTIALS,
         allow_methods=["*"],
-        allow_headers=settings.CORS_ALLOW_HEADERS,
+        allow_headers=cors_headers,
     )
 
     # Include routers

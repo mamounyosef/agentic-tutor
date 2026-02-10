@@ -4,11 +4,11 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 
-from ....core.config import get_settings
-from ..state import ConstructorState
+from app.core.config import get_settings
+from app.agents.constructor.state import ConstructorState
 from .nodes import (
     detect_file_types_node,
     extract_content_node,
@@ -32,7 +32,7 @@ class IngestionGraph:
     5. Report completion
     """
 
-    def __init__(self, checkpointer: Optional[SqliteSaver] = None):
+    def __init__(self, checkpointer: Optional[MemorySaver] = None):
         """
         Initialize the Ingestion Graph.
 
@@ -86,7 +86,7 @@ class IngestionGraph:
 
 
 def build_ingestion_graph(
-    checkpointer: Optional[SqliteSaver] = None,
+    checkpointer: Optional[MemorySaver] = None,
 ) -> IngestionGraph:
     """
     Build and return an Ingestion Agent graph.

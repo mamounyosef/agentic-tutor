@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 from langchain_core.tools import tool
 from pydantic import BaseModel
 
-from ....core.config import get_settings
+from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -441,7 +441,7 @@ async def store_chunks_in_vector_db(
         Dictionary with chunk IDs and status
     """
     try:
-        from ....vector.constructor_store import ConstructorVectorStore
+        from app.vector.constructor_store import ConstructorVectorStore
 
         vector_store = ConstructorVectorStore(course_id)
         chunk_ids = await vector_store.add_content_chunks(chunks)
@@ -483,7 +483,7 @@ async def store_topic_in_vector_db(
         Dictionary with status
     """
     try:
-        from ....vector.constructor_store import ConstructorVectorStore
+        from app.vector.constructor_store import ConstructorVectorStore
 
         vector_store = ConstructorVectorStore(course_id)
 
@@ -531,7 +531,7 @@ async def store_quiz_in_vector_db(
         Dictionary with status
     """
     try:
-        from ....vector.constructor_store import ConstructorVectorStore
+        from app.vector.constructor_store import ConstructorVectorStore
 
         vector_store = ConstructorVectorStore(course_id)
 

@@ -57,7 +57,7 @@ export default function LoginPage() {
         data.email
       )
       toast.success("Welcome back, Creator!")
-      router.push("/creator/dashboard")
+      router.push("/constructor/dashboard")
     } catch (error: any) {
       toast.error(error.response?.data?.detail || "Login failed. Please check your credentials.")
     } finally {

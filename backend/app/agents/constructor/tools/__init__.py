@@ -8,6 +8,7 @@ This module provides LangChain tools for the Constructor Agent:
 - Storage (Vector DB + MySQL)
 """
 
+# Import from local tool modules to avoid circular imports
 from .ingestion import (
     ingest_pdf,
     ingest_ppt,
@@ -22,9 +23,7 @@ from .structure import (
     detect_topics_from_chunks,
     organize_chunks_into_units,
     identify_prerequisite_relationships,
-    create_unit_record,
-    create_topic_record,
-    link_prerequisites
+    generate_topic_summary
 )
 
 from .quiz import (
@@ -32,16 +31,16 @@ from .quiz import (
     generate_multiple_choice,
     generate_true_false,
     generate_short_answer,
-    create_quiz_rubric,
-    save_quiz_to_db
+    create_quiz_rubric
 )
 
 from .storage import (
+    save_material_reference,
+    store_chunks_in_vector_db,
     create_course_record,
     create_unit_record,
     create_topic_record,
-    save_material_reference,
-    store_chunks_in_vector_db
+    save_quiz_question
 )
 
 __all__ = [
@@ -58,9 +57,7 @@ __all__ = [
     "detect_topics_from_chunks",
     "organize_chunks_into_units",
     "identify_prerequisite_relationships",
-    "create_unit_record",
-    "create_topic_record",
-    "link_prerequisites",
+    "generate_topic_summary",
 
     # Quiz tools
     "generate_quiz_question",
@@ -68,12 +65,12 @@ __all__ = [
     "generate_true_false",
     "generate_short_answer",
     "create_quiz_rubric",
-    "save_quiz_to_db",
 
     # Storage tools
     "create_course_record",
     "create_unit_record",
     "create_topic_record",
+    "save_quiz_question",
     "save_material_reference",
     "store_chunks_in_vector_db",
 ]

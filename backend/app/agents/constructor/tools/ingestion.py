@@ -239,7 +239,7 @@ async def ingest_video(
             }
 
         # Perform transcription
-        from ....core.transcription import transcribe_video
+        from app.core.transcription import transcribe_video
 
         logger.info(f"Transcribing video: {file_path}")
         transcription_result = await transcribe_video(file_path)
@@ -530,7 +530,7 @@ async def generate_embeddings_for_chunks(
     Returns:
         Dictionary with embedding status
     """
-    from ....vector.constructor_store import ConstructorVectorStore
+    from app.vector.constructor_store import ConstructorVectorStore
 
     try:
         vector_store = ConstructorVectorStore(course_id)

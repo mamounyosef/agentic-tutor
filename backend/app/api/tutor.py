@@ -14,24 +14,68 @@ from pydantic import BaseModel
 
 from langchain_core.messages import HumanMessage
 
-from ....core.config import Settings, get_settings
-from ....db.constructor.models import Course, Unit, Topic
-from ....db.tutor.models import Student, Enrollment, Mastery, TutorSession
-from ....db.base import get_constructor_session, get_tutor_session
-from ..auth import get_current_student
-from ..websocket import manager
+from app.core.config import Settings, get_settings
+from app.db.constructor.models import Course, Unit, Topic
+from app.db.tutor.models import Student, Enrollment, Mastery, TutorSession
+from app.db.base import get_constructor_session, get_tutor_session
+from app.api.auth import get_current_student
+from app.api.websocket import manager
 
 # Import Tutor agents
-from ....agents.tutor.graph import (
+from app.agents.tutor.graph import (
     build_tutor_graph,
     continue_tutoring_session,
     start_tutoring_session,
 )
-from ....agents.tutor.state import TutorState, create_initial_tutor_state
+from app.agents.tutor.state import TutorState, create_initial_tutor_state
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/tutor", tags=["Tutor"])
+
+
+def _is_llm_quota_error(exc: Exception) -> bool:
+    """Detect provider quota/rate-limit errors from OpenAI-compatible backends."""
+    text = str(exc).lower()
+    return (
+        "error code: 429" in text
+        or "'code': '1113'" in text
+        or "'code': '1302'" in text
+        or "insufficient balance" in text
+        or "no resource package" in text
+        or "please recharge" in text
+        or "rate limit reached" in text
+    )
+
+
+def _is_llm_connection_error(exc: Exception) -> bool:
+    """Detect upstream LLM connectivity issues."""
+    text = str(exc).lower()
+    return (
+        "connection error" in text
+        or "connecterror" in text
+        or "connection refused" in text
+        or "winerror 10061" in text
+        or "failed to establish a new connection" in text
+    )
+
+
+def _llm_unavailable_message() -> str:
+    """User-facing fallback message for provider limit exhaustion."""
+    return (
+        "I can't generate an AI response right now because the LLM provider "
+        "rejected the request due to limits (HTTP 429, e.g. rate-limit code 1302 "
+        "or quota code 1113). Please wait and retry, or adjust plan/endpoint/key."
+    )
+
+
+def _llm_connection_message(settings: Settings) -> str:
+    """User-facing message when the local LLM endpoint is unreachable."""
+    return (
+        "I can't reach the configured LLM endpoint right now. "
+        f"Expected: {settings.LLM_BASE_URL}. "
+        "If you're using LM Studio, make sure the local server is running and a model is loaded."
+    )
 
 
 # ==============================================================================
@@ -204,10 +248,27 @@ async def tutor_websocket(
 
                 except Exception as e:
                     logger.error(f"Error in tutor stream: {e}")
-                    await manager.send_error(
-                        session_id,
-                        f"Error processing request: {str(e)}",
-                    )
+                    if _is_llm_quota_error(e):
+                        fallback = _llm_unavailable_message()
+                        await manager.send_token(
+                            session_id,
+                            fallback,
+                            is_first=True,
+                            is_last=True,
+                        )
+                    elif _is_llm_connection_error(e):
+                        fallback = _llm_connection_message(settings)
+                        await manager.send_token(
+                            session_id,
+                            fallback,
+                            is_first=True,
+                            is_last=True,
+                        )
+                    else:
+                        await manager.send_error(
+                            session_id,
+                            f"Error processing request: {str(e)}",
+                        )
 
             elif message_type == "start":
                 # Initialize a new session
@@ -574,6 +635,16 @@ async def tutor_chat(
         raise
     except Exception as e:
         logger.error(f"Error in tutor chat: {e}")
+        if _is_llm_quota_error(e):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=_llm_unavailable_message(),
+            )
+        if _is_llm_connection_error(e):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=_llm_connection_message(settings),
+            )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to process message: {str(e)}"
@@ -943,7 +1014,7 @@ async def submit_quiz_answer(
 
     Uses hard-coded grading (not LLM) for speed and cost efficiency.
     """
-    from ....db.constructor.models import QuizQuestion
+    from app.db.constructor.models import QuizQuestion
 
     # Get the question
     async with get_constructor_session() as session:
@@ -1024,7 +1095,7 @@ async def get_quiz_question(
 
     Fetches from the Constructor database (read-only).
     """
-    from ....db.constructor.models import QuizQuestion
+    from app.db.constructor.models import QuizQuestion
 
     async with get_constructor_session() as session:
         query = select(QuizQuestion).where(QuizQuestion.course_id == course_id)
@@ -1058,4 +1129,4 @@ async def get_quiz_question(
 
 
 # Type alias for TutorGraph
-from ....agents.tutor.graph import TutorGraph
+from app.agents.tutor.graph import TutorGraph

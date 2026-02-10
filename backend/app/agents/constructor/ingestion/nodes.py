@@ -4,8 +4,8 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List
 
-from ..state import ConstructorState, UploadedFile
-from ..tools.ingestion import (
+from app.agents.constructor.state import ConstructorState, UploadedFile
+from app.agents.constructor.tools.ingestion import (
     ingest_pdf,
     ingest_ppt,
     ingest_docx,
@@ -187,7 +187,7 @@ async def store_chunks_node(state: ConstructorState) -> Dict[str, Any]:
 
     Generates embeddings and persists to ChromaDB.
     """
-    from ..tools.ingestion import generate_embeddings_for_chunks
+    from app.agents.constructor.tools.ingestion import generate_embeddings_for_chunks
 
     content_chunks = state.get("content_chunks", [])
     course_id = state.get("course_id")

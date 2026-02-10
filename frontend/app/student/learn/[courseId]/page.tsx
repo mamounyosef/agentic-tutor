@@ -128,8 +128,9 @@ export default function StudentLearnPage({ params }: { params: { courseId: strin
   }
 
   const connectWebSocket = (sessionId: string) => {
-    const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:"
-    const wsUrl = `${wsProtocol}//${window.location.host}/api/v1/tutor/session/ws/${sessionId}`
+    const apiBase = process.env.NEXT_PUBLIC_API_URL || `${window.location.protocol}//${window.location.host}`
+    const wsBase = apiBase.replace(/^http/, "ws")
+    const wsUrl = `${wsBase}/api/v1/tutor/session/ws/${sessionId}`
 
     wsRef.current = new WebSocket(wsUrl)
 
@@ -190,7 +191,10 @@ export default function StudentLearnPage({ params }: { params: { courseId: strin
     }
 
     wsRef.current.onclose = () => setIsConnected(false)
-    wsRef.current.onerror = () => setIsConnected(false)
+    wsRef.current.onerror = () => {
+      setIsConnected(false)
+      toast.error("WebSocket connection error. Falling back to HTTP when needed.")
+    }
   }
 
   const scrollToBottom = () => {
@@ -211,16 +215,33 @@ export default function StudentLearnPage({ params }: { params: { courseId: strin
     setInputMessage("")
     setIsLoading(true)
 
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({
-        type: "message",
-        message: userMessage.content,
-        student_id: studentId,
-        course_id: courseId,
-      }))
-    }
+    try {
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({
+          type: "message",
+          message: userMessage.content,
+          student_id: studentId,
+          course_id: courseId,
+        }))
+        return
+      }
 
-    setIsLoading(false)
+      const response = await tutorApi.chat(sessionId, userMessage.content)
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `${Date.now()}_assistant`,
+          role: "assistant",
+          content: response.response || "I received your message.",
+          timestamp: new Date(),
+        },
+      ])
+      toast.warning("WebSocket was not connected. Used HTTP fallback.")
+    } catch (error: any) {
+      toast.error(error.response?.data?.detail || "Failed to send message")
+    } finally {
+      setIsLoading(false)
+    }
   }
 
   const handleQuizAnswer = async (answer: string) => {

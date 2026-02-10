@@ -7,13 +7,13 @@ and its sub-agents (Ingestion, Structure, Quiz, Validation).
 import logging
 from typing import Any, Dict, Optional
 
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.memory import MemorySaver
 
-from .ingestion import IngestionGraph
+from app.agents.constructor.ingestion import IngestionGraph
 from .state import ConstructorState
-from .structure import StructureGraph
-from .quiz_gen import QuizGenGraph
-from .validation import ValidationGraph
+from app.agents.constructor.structure import StructureGraph
+from app.agents.constructor.quiz_gen import QuizGenGraph
+from app.agents.constructor.validation import ValidationGraph
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ class ConstructorOrchestrator:
     sub-agents and integrate their results back into the main state.
     """
 
-    def __init__(self, session_id: str, checkpointer: Optional[SqliteSaver] = None):
+    def __init__(self, session_id: str, checkpointer: Optional[MemorySaver] = None):
         """
         Initialize the orchestrator with all sub-agent graphs.
 
@@ -278,7 +278,7 @@ class ConstructorOrchestrator:
 _orchestrators: Dict[str, ConstructorOrchestrator] = {}
 
 
-def get_orchestrator(session_id: str, checkpointer: Optional[SqliteSaver] = None) -> ConstructorOrchestrator:
+def get_orchestrator(session_id: str, checkpointer: Optional[MemorySaver] = None) -> ConstructorOrchestrator:
     """
     Get or create an orchestrator for the given session.
 

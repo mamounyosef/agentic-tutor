@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 
 from langchain_core.tools import tool
 
-from ....vector.student_store import get_student_store
+from app.vector.student_store import get_student_store
 
 logger = logging.getLogger(__name__)
 

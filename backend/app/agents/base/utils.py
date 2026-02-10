@@ -34,7 +34,7 @@ def format_messages_for_display(messages: List[Dict[str, Any]]) -> List[Message]
 
 
 def messages_to_langchain(
-    messages: List[Dict[str, Any]]
+    messages: List[Any]
 ) -> List[BaseMessage]:
     """
     Convert message dicts to LangChain message objects.
@@ -47,18 +47,29 @@ def messages_to_langchain(
     """
     result = []
     for msg in messages:
-        role = msg.get("role", "").lower()
-        content = msg.get("content", "")
+        # Pass through LangChain message objects unchanged.
+        if isinstance(msg, BaseMessage):
+            result.append(msg)
+            continue
 
-        if role == "user":
-            result.append(HumanMessage(content=content))
-        elif role == "assistant":
-            result.append(AIMessage(content=content))
-        elif role == "system":
-            result.append(SystemMessage(content=content))
-        else:
-            # Default to human message
-            result.append(HumanMessage(content=content))
+        # Backward-compatible support for dict-style messages.
+        if isinstance(msg, dict):
+            role = str(msg.get("role", "")).lower()
+            content = msg.get("content", "")
+
+            if role == "user":
+                result.append(HumanMessage(content=content))
+            elif role == "assistant":
+                result.append(AIMessage(content=content))
+            elif role == "system":
+                result.append(SystemMessage(content=content))
+            else:
+                # Default to human message
+                result.append(HumanMessage(content=content))
+            continue
+
+        # Fallback: stringify unknown message shapes as user content.
+        result.append(HumanMessage(content=str(msg)))
 
     return result
 

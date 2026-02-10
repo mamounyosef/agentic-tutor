@@ -126,6 +126,7 @@ def create_initial_constructor_state(
     session_id: str,
     creator_id: int,
     course_title: Optional[str] = None,
+    course_info: Optional[Dict[str, Any]] = None,
 ) -> ConstructorState:
     """
     Create an initial Constructor state.
@@ -134,11 +135,22 @@ def create_initial_constructor_state(
         session_id: Unique session identifier
         creator_id: ID of the course creator
         course_title: Optional initial course title
+        course_info: Optional initial course info payload with
+            title, description, and difficulty fields
 
     Returns:
         Initial ConstructorState
     """
     now = datetime.utcnow().isoformat()
+
+    initial_title = course_title or ""
+    initial_description = ""
+    initial_difficulty = "beginner"
+
+    if course_info:
+        initial_title = course_info.get("title") or initial_title
+        initial_description = course_info.get("description") or ""
+        initial_difficulty = course_info.get("difficulty") or "beginner"
 
     return ConstructorState(
         messages=[],
@@ -146,9 +158,9 @@ def create_initial_constructor_state(
         creator_id=creator_id,
         course_id=None,
         course_info=CourseInfo(
-            title=course_title or "",
-            description="",
-            difficulty="beginner",
+            title=initial_title,
+            description=initial_description,
+            difficulty=initial_difficulty,
             tags=[],
         ),
         phase="welcome",

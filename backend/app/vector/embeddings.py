@@ -16,17 +16,25 @@ class EmbeddingConfig(BaseModel):
 
 
 class EmbeddingService:
-    """Service for generating embeddings using Z.AI (OpenAI-compatible)."""
+    """Service for generating embeddings using an OpenAI-compatible backend."""
 
     def __init__(self, settings: Settings):
-        """Initialize the embedding service with Z.AI configuration."""
+        """Initialize the embedding service configuration."""
         self.settings = settings
+        api_key = settings.EMBEDDINGS_API_KEY
+        base = (settings.EMBEDDINGS_BASE_URL or "").lower()
+        if not api_key and ("127.0.0.1" in base or "localhost" in base):
+            api_key = "lm-studio"
 
-        # Z.AI uses OpenAI-compatible API
+        # OpenAI-compatible embeddings API (LM Studio, cloud providers, etc.)
         self.embeddings = OpenAIEmbeddings(
             base_url=settings.EMBEDDINGS_BASE_URL,
-            api_key=settings.EMBEDDINGS_API_KEY,
+            api_key=api_key,
             model=settings.EMBEDDINGS_MODEL,
+            # LM Studio expects raw strings for /v1/embeddings.
+            # LangChain's tiktoken path may send token arrays that LM Studio rejects.
+            tiktoken_enabled=False,
+            check_embedding_ctx_length=False,
         )
 
     async def embed_texts(self, texts: List[str]) -> List[List[float]]:

@@ -6,10 +6,10 @@ This agent validates the course quality before publishing.
 import logging
 from typing import Any, Dict, Optional
 
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 
-from ....core.config import get_settings
+from app.core.config import get_settings
 from .nodes import (
     calculate_readiness_node,
     generate_report_node,
@@ -34,7 +34,7 @@ class ValidationGraph:
     5. Generate validation report
     """
 
-    def __init__(self, checkpointer: Optional[SqliteSaver] = None):
+    def __init__(self, checkpointer: Optional[MemorySaver] = None):
         """
         Initialize the Validation Graph.
 
@@ -88,7 +88,7 @@ class ValidationGraph:
 
 
 def build_validation_graph(
-    checkpointer: Optional[SqliteSaver] = None,
+    checkpointer: Optional[MemorySaver] = None,
 ) -> ValidationGraph:
     """
     Build and return a Validation Agent graph.

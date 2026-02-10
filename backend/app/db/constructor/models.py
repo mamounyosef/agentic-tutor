@@ -28,7 +28,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import relationship
 
-from ....db.base import Base
+from app.db.base import Base
 
 
 class Creator(Base):
@@ -59,7 +59,7 @@ class Course(Base):
     is_published = Column(Boolean, default=False, index=True)
     created_at = Column(String(50), default=lambda: datetime.utcnow().isoformat())
     updated_at = Column(String(50), default=lambda: datetime.utcnow().isoformat(), onupdate=lambda: datetime.utcnow().isoformat())
-    metadata = Column(JSON, nullable=True)
+    course_metadata = Column(JSON, nullable=True)
 
     # Relationships
     creator = relationship("Creator", back_populates="courses")
@@ -128,7 +128,7 @@ class Material(Base):
     )
     file_path = Column(String(512), nullable=False)
     original_filename = Column(String(255), nullable=True)
-    metadata = Column(JSON, nullable=True)
+    course_metadata = Column(JSON, nullable=True)
     uploaded_at = Column(String(50), default=lambda: datetime.utcnow().isoformat())
 
     # Processing status
@@ -162,7 +162,7 @@ class QuizQuestion(Base):
         Enum("easy", "medium", "hard", name="difficulty"),
         default="medium"
     )
-    metadata = Column(JSON, nullable=True)
+    course_metadata = Column(JSON, nullable=True)
     created_at = Column(String(50), default=lambda: datetime.utcnow().isoformat())
 
     # Vector embedding for similarity search

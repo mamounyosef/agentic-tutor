@@ -8,10 +8,10 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 
-from ....core.config import get_settings
+from app.core.config import get_settings
 from .nodes import (
     explainer_node,
     gap_analysis_node,
@@ -37,7 +37,7 @@ class TutorGraph:
     Provides a clean interface for interacting with the LangGraph.
     """
 
-    def __init__(self, session_id: str, checkpointer: Optional[SqliteSaver] = None):
+    def __init__(self, session_id: str, checkpointer: Optional[MemorySaver] = None):
         """
         Initialize the Tutor Graph.
 
@@ -49,16 +49,9 @@ class TutorGraph:
         self.checkpointer = checkpointer or self._create_checkpointer()
         self.graph = self._build_graph()
 
-    def _create_checkpointer(self) -> SqliteSaver:
-        """Create a SQLite checkpointer for session persistence."""
-        settings = get_settings()
-        checkpoint_dir = Path(settings.TUTOR_CHECKPOINT_PATH)
-        checkpoint_dir.mkdir(parents=True, exist_ok=True)
-
-        # Use a single checkpointer file for all tutor sessions
-        # Thread-based isolation will be used
-        db_path = checkpoint_dir / "tutor_sessions.db"
-        return SqliteSaver.from_conn_string(str(db_path))
+    def _create_checkpointer(self) -> MemorySaver:
+        """Create a memory checkpointer for session persistence."""
+        return MemorySaver()
 
     def _build_graph(self) -> StateGraph:
         """Build the Tutor Session Coordinator graph."""
@@ -186,13 +179,21 @@ class TutorGraph:
             config: Optional configuration
 
         Returns:
-            Current state or None if not found
+            Current state values or None if not found
         """
         config = config or {"configurable": {"thread_id": self.session_id}}
         try:
-            return self.graph.get_state(config)
+            snapshot = self.graph.get_state(config)
         except Exception:
             return None
+
+        if snapshot is None:
+            return None
+
+        values = getattr(snapshot, "values", None)
+        if values is None:
+            return None
+        return values
 
     async def update_state(
         self,
@@ -218,7 +219,7 @@ class TutorGraph:
 
 def build_tutor_graph(
     session_id: str,
-    checkpointer: Optional[SqliteSaver] = None,
+    checkpointer: Optional[MemorySaver] = None,
 ) -> TutorGraph:
     """
     Build and return a Tutor Session Coordinator graph.

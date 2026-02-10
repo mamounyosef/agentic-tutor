@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.memory import MemorySaver
 
 from ..core.config import Settings, get_settings
 
@@ -22,7 +22,7 @@ from ..core.config import Settings, get_settings
 # CONSTRUCTOR CHECKPOINTER
 # ==============================================================================
 
-def get_constructor_checkpointer(session_id: str) -> SqliteSaver:
+def get_constructor_checkpointer(session_id: str) -> MemorySaver:
     """
     Get or create a LangGraph checkpointer for a Constructor session.
 
@@ -36,29 +36,20 @@ def get_constructor_checkpointer(session_id: str) -> SqliteSaver:
         session_id: Unique identifier for the construction session
 
     Returns:
-        SqliteSaver instance for storing session state
+        MemorySaver instance for storing session state
 
     Example:
         checkpointer = get_constructor_checkpointer("session_abc123")
         # Use in LangGraph compiled graph
     """
-    settings = get_settings()
-
-    # Ensure checkpoint directory exists
-    checkpoint_dir = Path(settings.CONSTRUCTOR_CHECKPOINT_PATH)
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-
-    # Each session gets its own SQLite file
-    checkpoint_path = checkpoint_dir / f"session_{session_id}.db"
-
-    return SqliteSaver.from_conn_string(str(checkpoint_path))
+    return MemorySaver()
 
 
 # ==============================================================================
 # TUTOR CHECKPOINTER
 # ==============================================================================
 
-def get_tutor_checkpointer(session_id: str) -> SqliteSaver:
+def get_tutor_checkpointer(session_id: str) -> MemorySaver:
     """
     Get or create a LangGraph checkpointer for a Tutor session.
 
@@ -72,22 +63,13 @@ def get_tutor_checkpointer(session_id: str) -> SqliteSaver:
         session_id: Unique identifier for the tutoring session
 
     Returns:
-        SqliteSaver instance for storing session state
+        MemorySaver instance for storing session state
 
     Example:
         checkpointer = get_tutor_checkpointer("session_xyz789")
         # Use in LangGraph compiled graph
     """
-    settings = get_settings()
-
-    # Ensure checkpoint directory exists
-    checkpoint_dir = Path(settings.TUTOR_CHECKPOINT_PATH)
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-
-    # Each session gets its own SQLite file
-    checkpoint_path = checkpoint_dir / f"session_{session_id}.db"
-
-    return SqliteSaver.from_conn_string(str(checkpoint_path))
+    return MemorySaver()
 
 
 # ==============================================================================

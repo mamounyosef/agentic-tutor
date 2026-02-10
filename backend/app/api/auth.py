@@ -9,15 +9,15 @@ from pydantic import BaseModel, EmailStr
 
 from sqlalchemy import select
 
-from ....core.security import (
+from app.core.security import (
     create_access_token,
     get_password_hash,
     verify_password,
 )
-from ....core.config import Settings, get_settings
-from ....db.constructor.models import Creator
-from ....db.tutor.models import Student
-from ....db.base import get_constructor_session, get_tutor_session
+from app.core.config import Settings, get_settings
+from app.db.constructor.models import Creator
+from app.db.tutor.models import Student
+from app.db.base import get_constructor_session, get_tutor_session
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +85,7 @@ async def get_current_creator(
     settings: Settings = Depends(get_settings)
 ) -> Creator:
     """Get the current authenticated creator from JWT token."""
-    from ....core.security import verify_access_token
+    from app.core.security import verify_access_token
 
     payload = verify_access_token(token)
     if not payload or payload.get("user_type") != "creator":
@@ -121,7 +121,7 @@ async def get_current_student(
     settings: Settings = Depends(get_settings)
 ) -> Student:
     """Get the current authenticated student from JWT token."""
-    from ....core.security import verify_access_token
+    from app.core.security import verify_access_token
     from sqlalchemy import select
 
     payload = verify_access_token(token)
@@ -267,7 +267,8 @@ async def register_creator(
         return TokenResponse(
             access_token=access_token,
             token_type="bearer",
-            user_type="creator"
+            user_type="creator",
+            user_id=creator.id,
         )
 
 
@@ -298,7 +299,8 @@ async def login_creator(
     return TokenResponse(
         access_token=access_token,
         token_type="bearer",
-        user_type="creator"
+        user_type="creator",
+        user_id=creator.id,
     )
 
 
@@ -352,7 +354,7 @@ async def register_student(
         await session.refresh(student)
 
         # Create student profile
-        from ....db.tutor.models import StudentProfile
+        from app.db.tutor.models import StudentProfile
 
         profile = StudentProfile(
             student_id=student.id,
@@ -376,7 +378,8 @@ async def register_student(
         return TokenResponse(
             access_token=access_token,
             token_type="bearer",
-            user_type="student"
+            user_type="student",
+            user_id=student.id,
         )
 
 
@@ -407,7 +410,8 @@ async def login_student(
     return TokenResponse(
         access_token=access_token,
         token_type="bearer",
-        user_type="student"
+        user_type="student",
+        user_id=student.id,
     )
 
 

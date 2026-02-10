@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 
 from langchain_core.tools import tool
 
-from ....base.llm import get_llm
+from app.agents.base.llm import get_llm
 
 logger = logging.getLogger(__name__)
 

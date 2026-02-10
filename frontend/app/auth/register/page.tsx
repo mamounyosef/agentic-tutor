@@ -70,7 +70,7 @@ export default function RegisterPage() {
         data.email
       )
       toast.success("Account created successfully!")
-      router.push("/creator/dashboard")
+      router.push("/constructor/dashboard")
     } catch (error: any) {
       toast.error(error.response?.data?.detail || "Registration failed. Please try again.")
     } finally {

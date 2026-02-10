@@ -28,7 +28,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import relationship
 
-from ....db.base import Base
+from app.db.base import Base
 
 
 class Student(Base):

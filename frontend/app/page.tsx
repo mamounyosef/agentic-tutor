@@ -44,7 +44,7 @@ export default function HomePage() {
                 </Link>
               </Button>
               <Button asChild variant="outline" size="lg" className="button-press text-base px-8 h-12 glass">
-                <Link href="/creator/dashboard" className="flex items-center gap-2">
+                <Link href="/constructor/dashboard" className="flex items-center gap-2">
                   <Zap className="w-5 h-5" />
                   Create Course
                 </Link>

@@ -6,6 +6,7 @@ This module provides:
 - Engine management for both Constructor and Tutor databases
 """
 
+from contextlib import asynccontextmanager
 from functools import lru_cache
 from typing import AsyncGenerator
 
@@ -60,8 +61,9 @@ def get_constructor_session_maker():
     return _constructor_session_maker
 
 
-async def get_constructor_session() -> AsyncGenerator[AsyncSession, None]:
-    """Get a Constructor database session."""
+@asynccontextmanager
+async def get_constructor_session():
+    """Get a Constructor database session as an async context manager."""
     session_maker = get_constructor_session_maker()
     async with session_maker() as session:
         yield session
@@ -107,8 +109,9 @@ def get_tutor_session_maker():
     return _tutor_session_maker
 
 
-async def get_tutor_session() -> AsyncGenerator[AsyncSession, None]:
-    """Get a Tutor database session."""
+@asynccontextmanager
+async def get_tutor_session():
+    """Get a Tutor database session as an async context manager."""
     session_maker = get_tutor_session_maker()
     async with session_maker() as session:
         yield session

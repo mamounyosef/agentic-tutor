@@ -15,8 +15,8 @@ import json
 import logging
 from typing import Any, Dict, List
 
-from ..state import TopicInfo, UnitInfo
-from ..tools.structure import (
+from app.agents.constructor.state import TopicInfo, UnitInfo
+from app.agents.constructor.tools.structure import (
     detect_topics_from_chunks,
     identify_prerequisite_relationships,
     organize_chunks_into_units,

@@ -12,9 +12,9 @@ from typing import Any, Dict, List, Optional
 
 from langchain_core.tools import tool
 
-from ....core.llm import get_llm
-from ....vector.constructor_store import ConstructorVectorStore
-from ....vector.student_store import get_student_store
+from app.agents.base.llm import get_llm
+from app.vector.constructor_store import ConstructorVectorStore
+from app.vector.student_store import get_student_store
 
 logger = logging.getLogger(__name__)
 

@@ -7,10 +7,10 @@ a coherent structure with units, topics, and prerequisite relationships.
 import logging
 from typing import Any, Dict, Optional
 
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 
-from ....core.config import get_settings
+from app.core.config import get_settings
 from .nodes import (
     analyze_content_node,
     build_hierarchy_node,
@@ -41,7 +41,7 @@ class StructureGraph:
     8. Finalize structure
     """
 
-    def __init__(self, checkpointer: Optional[SqliteSaver] = None):
+    def __init__(self, checkpointer: Optional[MemorySaver] = None):
         """
         Initialize the Structure Analysis Graph.
 
@@ -101,7 +101,7 @@ class StructureGraph:
 
 
 def build_structure_graph(
-    checkpointer: Optional[SqliteSaver] = None,
+    checkpointer: Optional[MemorySaver] = None,
 ) -> StructureGraph:
     """
     Build and return a Structure Analysis Agent graph.

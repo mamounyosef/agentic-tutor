@@ -12,8 +12,8 @@ from typing import Any, Dict, List, Optional
 
 from langchain_core.tools import tool
 
-from ....vector.constructor_store import ConstructorVectorStore
-from ....vector.student_store import StudentVectorStore, get_student_store
+from app.vector.constructor_store import ConstructorVectorStore
+from app.vector.student_store import StudentVectorStore, get_student_store
 
 logger = logging.getLogger(__name__)
 

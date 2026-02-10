@@ -664,3 +664,27 @@ class StudentVectorStore:
 
         # Reinitialize
         self.base_path.mkdir(parents=True, exist_ok=True)
+
+
+# =============================================================================
+# Helper Functions
+# =============================================================================
+
+# Cache of StudentVectorStore instances
+_student_stores: dict[int, StudentVectorStore] = {}
+
+
+def get_student_store(student_id: int, course_id: int | None = None) -> StudentVectorStore:
+    """
+    Get or create a StudentVectorStore for the given student.
+
+    Args:
+        student_id: The student's ID
+        course_id: Optional course ID (kept for API compatibility, not used)
+
+    Returns:
+        StudentVectorStore instance for the student
+    """
+    if student_id not in _student_stores:
+        _student_stores[student_id] = StudentVectorStore(student_id)
+    return _student_stores[student_id]

@@ -14,19 +14,67 @@ from pydantic import BaseModel
 
 from langchain_core.messages import HumanMessage
 
-from ....core.config import Settings, get_settings
-from ....db.constructor.models import Course, Creator
-from ....db.base import get_constructor_session
-from ..auth import get_current_creator
-from ..websocket import manager, stream_langgraph_events
+from app.core.config import Settings, get_settings
+from app.db.constructor.models import Course, Creator
+from app.db.base import get_constructor_session
+from app.api.auth import get_current_creator
+from app.api.websocket import manager, stream_langgraph_events
 
 # Import Constructor agents
-from ....agents.constructor.coordinator.agent import build_coordinator_graph
-from ....agents.constructor.state import ConstructorState, create_initial_constructor_state
+from app.agents.constructor.coordinator.agent import build_coordinator_graph, CoordinatorGraph
+from app.agents.constructor.coordinator.prompts import WELCOME_MESSAGE
+from app.agents.constructor.state import ConstructorState, create_initial_constructor_state
+
+# Type alias
+ConstructorGraph = CoordinatorGraph
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/constructor", tags=["Constructor"])
+
+
+def _is_llm_quota_error(exc: Exception) -> bool:
+    """Detect provider quota/rate-limit errors from OpenAI-compatible backends."""
+    text = str(exc).lower()
+    return (
+        "error code: 429" in text
+        or "'code': '1113'" in text
+        or "'code': '1302'" in text
+        or "insufficient balance" in text
+        or "no resource package" in text
+        or "please recharge" in text
+        or "rate limit reached" in text
+    )
+
+
+def _is_llm_connection_error(exc: Exception) -> bool:
+    """Detect upstream LLM connectivity issues."""
+    text = str(exc).lower()
+    return (
+        "connection error" in text
+        or "connecterror" in text
+        or "connection refused" in text
+        or "winerror 10061" in text
+        or "failed to establish a new connection" in text
+    )
+
+
+def _llm_unavailable_message() -> str:
+    """User-facing fallback message for provider limit exhaustion."""
+    return (
+        "I can't generate an AI response right now because the LLM provider "
+        "rejected the request due to limits (HTTP 429, e.g. rate-limit code 1302 "
+        "or quota code 1113). Please wait and retry, or adjust plan/endpoint/key."
+    )
+
+
+def _llm_connection_message(settings: Settings) -> str:
+    """User-facing message when the local LLM endpoint is unreachable."""
+    return (
+        "I can't reach the configured LLM endpoint right now. "
+        f"Expected: {settings.LLM_BASE_URL}. "
+        "If you're using LM Studio, make sure the local server is running and a model is loaded."
+    )
 
 
 # ==============================================================================
@@ -187,16 +235,32 @@ async def constructor_websocket(
 
                 except Exception as e:
                     logger.error(f"Error in constructor stream: {e}")
-                    await manager.send_error(
-                        session_id,
-                        f"Error processing request: {str(e)}",
-                    )
+                    if _is_llm_quota_error(e):
+                        fallback = _llm_unavailable_message()
+                        await manager.send_token(
+                            session_id,
+                            fallback,
+                            is_first=True,
+                            is_last=True,
+                        )
+                    elif _is_llm_connection_error(e):
+                        fallback = _llm_connection_message(settings)
+                        await manager.send_token(
+                            session_id,
+                            fallback,
+                            is_first=True,
+                            is_last=True,
+                        )
+                    else:
+                        await manager.send_error(
+                            session_id,
+                            f"Error processing request: {str(e)}",
+                        )
 
             elif message_type == "start":
                 # Initialize a new session
-                graph = get_constructor_session_graph(session_id)
-
-                initial_state = create_initial_constructor_state(
+                get_constructor_session_graph(session_id)
+                create_initial_constructor_state(
                     session_id=session_id,
                     creator_id=data.get("creator_id"),
                     course_info={
@@ -206,28 +270,12 @@ async def constructor_websocket(
                     } if data.get("course_title") else None,
                 )
 
-                # Run welcome node
-                try:
-                    result = await graph.invoke(initial_state)
-
-                    # Extract welcome message
-                    messages = result.get("messages", [])
-                    for msg in messages:
-                        if hasattr(msg, "type") and msg.type == "ai":
-                            await manager.send_token(
-                                session_id,
-                                msg.content,
-                                is_first=True,
-                                is_last=True,
-                            )
-                            break
-
-                except Exception as e:
-                    logger.error(f"Error starting constructor session: {e}")
-                    await manager.send_error(
-                        session_id,
-                        f"Error starting session: {str(e)}",
-                    )
+                await manager.send_token(
+                    session_id,
+                    WELCOME_MESSAGE,
+                    is_first=True,
+                    is_last=True,
+                )
 
             elif message_type == "upload":
                 # Handle file upload notification
@@ -279,35 +327,16 @@ async def start_constructor_session(
         } if request.course_title else None,
     )
 
-    # Initialize the graph
-    graph = get_constructor_session_graph(session_id)
+    # Initialize graph/session for subsequent websocket-driven interaction.
+    get_constructor_session_graph(session_id)
 
-    try:
-        # Run welcome node to get greeting
-        result = await graph.invoke(initial_state)
-
-        # Extract welcome message
-        welcome_message = "Hello! I'm your Course Constructor Assistant. Let's build a course together!"
-        messages = result.get("messages", [])
-        for msg in messages:
-            if hasattr(msg, "type") and msg.type == "ai":
-                welcome_message = msg.content
-                break
-
-        return {
-            "session_id": session_id,
-            "creator_id": current_creator.id,
-            "message": welcome_message,
-            "status": "info_gathering",
-            "websocket_url": f"/api/v1/constructor/session/ws/{session_id}",
-        }
-
-    except Exception as e:
-        logger.error(f"Error starting constructor session: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to start session: {str(e)}"
-        )
+    return {
+        "session_id": session_id,
+        "creator_id": current_creator.id,
+        "message": WELCOME_MESSAGE,
+        "status": "info_gathering",
+        "websocket_url": f"/api/v1/constructor/session/ws/{session_id}",
+    }
 
 
 @router.post("/session/chat")
@@ -360,6 +389,16 @@ async def constructor_chat(
         raise
     except Exception as e:
         logger.error(f"Error in constructor chat: {e}")
+        if _is_llm_quota_error(e):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=_llm_unavailable_message(),
+            )
+        if _is_llm_connection_error(e):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=_llm_connection_message(settings),
+            )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to process message: {str(e)}"
@@ -381,7 +420,7 @@ async def upload_materials(
     """
     import uuid
 
-    from ....agents.constructor.tools.ingestion import (
+    from app.agents.constructor.tools.ingestion import (
         get_ingestion_storage_path,
         ingest_pdf,
         ingest_ppt,
@@ -600,7 +639,3 @@ async def get_course(
             "created_at": course.created_at,
             "updated_at": course.updated_at,
         }
-
-
-# Type alias for ConstructorGraph
-from ....agents.constructor.coordinator.agent import CoordinatorGraph as ConstructorGraph

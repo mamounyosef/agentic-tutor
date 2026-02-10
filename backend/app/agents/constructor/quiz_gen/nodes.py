@@ -14,8 +14,8 @@ import json
 import logging
 from typing import Any, Dict, List
 
-from ..state import QuizQuestionInfo
-from ..tools.quiz import (
+from app.agents.constructor.state import QuizQuestionInfo
+from app.agents.constructor.tools.quiz import (
     create_quiz_rubric,
     generate_multiple_choice,
     generate_quiz_question,

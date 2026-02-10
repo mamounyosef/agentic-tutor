@@ -6,10 +6,10 @@ This agent generates quiz questions for all topics in the course.
 import logging
 from typing import Any, Dict, Optional
 
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 
-from ....core.config import get_settings
+from app.core.config import get_settings
 from .nodes import (
     check_completion_node,
     create_rubrics_node,
@@ -38,7 +38,7 @@ class QuizGenGraph:
     7. Finalize quiz bank
     """
 
-    def __init__(self, checkpointer: Optional[SqliteSaver] = None):
+    def __init__(self, checkpointer: Optional[MemorySaver] = None):
         """
         Initialize the Quiz Generation Graph.
 
@@ -128,7 +128,7 @@ class QuizGenGraph:
 
 
 def build_quiz_gen_graph(
-    checkpointer: Optional[SqliteSaver] = None,
+    checkpointer: Optional[MemorySaver] = None,
 ) -> QuizGenGraph:
     """
     Build and return a Quiz Generation Agent graph.
