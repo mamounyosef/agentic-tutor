@@ -3,6 +3,14 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+node_modules/
+.next/
+.env
+dist/
+build/
+.claude/
+
+
 # C extensions
 *.so
 
@@ -205,3 +213,25 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Agentic Tutor specific
+# Data directories
+backend/data/
+backend/uploads/
+backend/logs/
+backend/checkpoints/
+backend/*.db
+backend/*.sqlite
+backend/*.sqlite3
+
+# Vector databases
+backend/vector_db/
+.chroma/
+
+# MyPy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Profiling
+*.prof
