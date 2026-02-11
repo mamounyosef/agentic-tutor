@@ -4,6 +4,7 @@ This module defines the TypedDict classes used by all Constructor agents.
 """
 
 from datetime import datetime
+import re
 from typing import Annotated, Any, Dict, List, Optional
 
 from langgraph.graph import add_messages
@@ -124,7 +125,7 @@ class ConstructorState(TypedDict):
 
 def create_initial_constructor_state(
     session_id: str,
-    creator_id: int,
+    creator_id: Optional[int],
     course_title: Optional[str] = None,
     course_info: Optional[Dict[str, Any]] = None,
 ) -> ConstructorState:
@@ -152,10 +153,12 @@ def create_initial_constructor_state(
         initial_description = course_info.get("description") or ""
         initial_difficulty = course_info.get("difficulty") or "beginner"
 
+    resolved_creator_id = resolve_creator_id(creator_id, session_id) or 0
+
     return ConstructorState(
         messages=[],
         session_id=session_id,
-        creator_id=creator_id,
+        creator_id=resolved_creator_id,
         course_id=None,
         course_info=CourseInfo(
             title=initial_title,
@@ -183,3 +186,24 @@ def create_initial_constructor_state(
         created_at=now,
         updated_at=now,
     )
+
+
+def resolve_creator_id(raw_creator_id: Any, session_id: str) -> Optional[int]:
+    """Resolve creator_id from explicit value or constructor session_id."""
+    try:
+        if raw_creator_id is not None:
+            parsed = int(raw_creator_id)
+            if parsed > 0:
+                return parsed
+    except (TypeError, ValueError):
+        pass
+
+    match = re.match(r"^constructor_(\d+)_\d+$", str(session_id or ""))
+    if match:
+        try:
+            parsed = int(match.group(1))
+            if parsed > 0:
+                return parsed
+        except (TypeError, ValueError):
+            return None
+    return None

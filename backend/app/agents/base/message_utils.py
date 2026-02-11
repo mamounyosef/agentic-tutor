@@ -68,6 +68,28 @@ def latest_assistant_content(messages: Iterable[Any]) -> Optional[str]:
     return None
 
 
+def latest_assistant_after_last_user(messages: Iterable[Any]) -> Optional[str]:
+    """Return newest assistant message that appears after the last user message."""
+    items = list(messages)
+    if not items:
+        return None
+
+    last_user_index = -1
+    for idx, message in enumerate(items):
+        if message_role(message) == "user":
+            last_user_index = idx
+
+    if last_user_index == -1:
+        return latest_assistant_content(items)
+
+    for message in reversed(items[last_user_index + 1:]):
+        if is_assistant_message(message):
+            content = message_content(message).strip()
+            if content:
+                return content
+    return None
+
+
 def append_user_message(messages: List[Any], content: str) -> List[Any]:
     """Return a new list with one canonical user message appended."""
     return [*messages, make_user_message(content)]

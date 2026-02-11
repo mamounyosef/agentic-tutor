@@ -70,12 +70,7 @@ async def extract_content_node(state: ConstructorState) -> Dict[str, Any]:
     Processes each file using the appropriate ingestion tool.
     """
     uploaded_files = state.get("uploaded_files", [])
-    course_id = state.get("course_id")
-
-    if not course_id:
-        return {
-            "errors": ["Cannot process files without a course_id"],
-        }
+    course_id = state.get("course_id") or 0
 
     processed_files = state.get("processed_files", [])
     extracted_contents = []

@@ -14,6 +14,8 @@ from pydantic import BaseModel
 from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
+MAX_COURSE_TITLE_LEN = 255
+ALLOWED_DIFFICULTY = {"beginner", "intermediate", "advanced"}
 
 
 # =============================================================================
@@ -24,15 +26,45 @@ def get_constructor_db_session():
     """Get a database session for the Constructor database."""
     try:
         from sqlalchemy import create_engine
+        from sqlalchemy.engine import make_url
         from sqlalchemy.orm import sessionmaker
 
         settings = get_settings()
-        engine = create_engine(settings.CONSTRUCTOR_DB_URL)
+        db_url = settings.CONSTRUCTOR_DB_URL
+        url = make_url(db_url)
+        driver = url.drivername
+
+        # Storage tools are synchronous; convert async drivers to sync equivalents.
+        if driver == "mysql+aiomysql":
+            url = url.set(drivername="mysql+pymysql")
+        elif driver == "postgresql+asyncpg":
+            url = url.set(drivername="postgresql+psycopg2")
+        elif driver == "sqlite+aiosqlite":
+            url = url.set(drivername="sqlite")
+
+        engine = create_engine(url)
         Session = sessionmaker(bind=engine)
         return Session()
     except Exception as e:
         logger.error(f"Error creating database session: {e}")
         return None
+
+
+def _sanitize_course_title(title: str) -> str:
+    """Normalize course title to fit DB constraints."""
+    normalized = " ".join(str(title or "").split()).strip()
+    return normalized[:MAX_COURSE_TITLE_LEN]
+
+
+def _sanitize_course_description(description: str) -> str:
+    """Normalize description text for DB writes."""
+    return str(description or "").strip()
+
+
+def _sanitize_difficulty(difficulty: str, default: str = "beginner") -> str:
+    """Normalize difficulty to supported values."""
+    normalized = str(difficulty or "").strip().lower()
+    return normalized if normalized in ALLOWED_DIFFICULTY else default
 
 
 # =============================================================================
@@ -69,6 +101,10 @@ def create_course_record(
     try:
         from sqlalchemy import text
 
+        safe_title = _sanitize_course_title(title)
+        safe_description = _sanitize_course_description(description)
+        safe_difficulty = _sanitize_difficulty(difficulty, default="beginner")
+
         result = session.execute(
             text("""
                 INSERT INTO courses (creator_id, title, description, difficulty, is_published)
@@ -76,9 +112,9 @@ def create_course_record(
             """),
             {
                 "creator_id": creator_id,
-                "title": title,
-                "description": description,
-                "difficulty": difficulty,
+                "title": safe_title,
+                "description": safe_description,
+                "difficulty": safe_difficulty,
             },
         )
         session.commit()
@@ -135,13 +171,13 @@ def update_course_record(
 
         if title is not None:
             updates.append("title = :title")
-            params["title"] = title
+            params["title"] = _sanitize_course_title(title)
         if description is not None:
             updates.append("description = :description")
-            params["description"] = description
+            params["description"] = _sanitize_course_description(description)
         if difficulty is not None:
             updates.append("difficulty = :difficulty")
-            params["difficulty"] = difficulty
+            params["difficulty"] = _sanitize_difficulty(difficulty)
         if is_published is not None:
             updates.append("is_published = :is_published")
             params["is_published"] = is_published

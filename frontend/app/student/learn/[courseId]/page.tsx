@@ -6,7 +6,7 @@ import Link from "next/link"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
-import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Progress } from "@/components/ui/progress"
 import { Badge } from "@/components/ui/badge"
@@ -28,6 +28,7 @@ import {
 import { useAuthStore } from "@/lib/store"
 import { tutorApi } from "@/lib/api"
 import { cn } from "@/lib/utils"
+import { ChatMarkdown } from "@/components/chat-markdown"
 
 interface Message {
   id: string
@@ -68,12 +69,9 @@ export default function StudentLearnPage({ params }: { params: { courseId: strin
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const wsRef = useRef<WebSocket | null>(null)
-  const initializedRef = useRef(false)
+  const initRequestIdRef = useRef(0)
 
   useEffect(() => {
-    if (initializedRef.current) return
-    initializedRef.current = true
-
     if (!studentToken) {
       router.push("/auth/login")
       return
@@ -82,8 +80,10 @@ export default function StudentLearnPage({ params }: { params: { courseId: strin
     loadCourseDetails()
 
     return () => {
+      initRequestIdRef.current += 1
       if (wsRef.current) {
         wsRef.current.close()
+        wsRef.current = null
       }
     }
   }, [])
@@ -93,8 +93,11 @@ export default function StudentLearnPage({ params }: { params: { courseId: strin
   }, [messages])
 
   const initializeSession = async () => {
+    const requestId = ++initRequestIdRef.current
     try {
       const response = await tutorApi.startSession(courseId)
+      if (requestId !== initRequestIdRef.current) return
+
       setSessionId(response.session_id)
 
       // Add welcome message
@@ -118,6 +121,7 @@ export default function StudentLearnPage({ params }: { params: { courseId: strin
       // Connect WebSocket
       connectWebSocket(response.session_id)
     } catch (error: any) {
+      if (requestId !== initRequestIdRef.current) return
       toast.error(error.response?.data?.detail || "Failed to start session")
     }
   }
@@ -131,9 +135,37 @@ export default function StudentLearnPage({ params }: { params: { courseId: strin
     }
   }
 
+  const resolveWebSocketBase = () => {
+    const wsProtocol = window.location.protocol === "https:" ? "wss" : "ws"
+    const configuredBase = process.env.NEXT_PUBLIC_WS_URL || process.env.NEXT_PUBLIC_API_URL
+
+    if (configuredBase) {
+      try {
+        const url = new URL(configuredBase)
+        // Guard against accidental ws through Next dev proxy on :3000.
+        if (
+          url.port === "3000" &&
+          (url.hostname === "localhost" || url.hostname === "127.0.0.1")
+        ) {
+          return `${wsProtocol}://localhost:8000`
+        }
+        const protocol = url.protocol === "https:" ? "wss" : "ws"
+        return `${protocol}://${url.host}`
+      } catch {
+        // Fall through to localhost backend default.
+      }
+    }
+
+    return `${wsProtocol}://${window.location.hostname}:8000`
+  }
+
   const connectWebSocket = (sessionId: string) => {
-    const apiBase = process.env.NEXT_PUBLIC_API_URL || `${window.location.protocol}//${window.location.host}`
-    const wsBase = apiBase.replace(/^http/, "ws")
+    if (wsRef.current) {
+      wsRef.current.close()
+      wsRef.current = null
+    }
+
+    const wsBase = resolveWebSocketBase()
     const wsUrl = `${wsBase}/api/v1/tutor/session/ws/${sessionId}`
 
     wsRef.current = new WebSocket(wsUrl)
@@ -454,7 +486,11 @@ export default function StudentLearnPage({ params }: { params: { courseId: strin
                               : "bg-muted text-foreground rounded-bl-sm"
                           )}
                         >
-                          <p className="whitespace-pre-wrap">{message.content}</p>
+                          {message.role === "assistant" ? (
+                            <ChatMarkdown content={message.content} />
+                          ) : (
+                            <p className="whitespace-pre-wrap">{message.content}</p>
+                          )}
                           {message.isStreaming && (
                             <span className="inline-block w-1 h-4 bg-current animate-pulse ml-1" />
                           )}
@@ -525,12 +561,12 @@ export default function StudentLearnPage({ params }: { params: { courseId: strin
                 {/* Input */}
                 <div className="p-4 border-t border-border/50">
                   <div className="flex gap-2">
-                    <Input
+                    <Textarea
                       placeholder="Ask a question or share what you're learning..."
                       value={inputMessage}
                       onChange={(e) => setInputMessage(e.target.value)}
                       onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && (e.preventDefault(), handleSendMessage())}
-                      className="flex-1"
+                      className="flex-1 min-h-[44px] max-h-40 resize-y"
                       disabled={!!activeQuiz}
                     />
                     <Button

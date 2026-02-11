@@ -49,7 +49,7 @@ CREATE TABLE courses (
     is_published BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    metadata JSON DEFAULT NULL COMMENT '{"allow_question_generation": true, "session_length": 30}',
+    course_metadata JSON DEFAULT NULL COMMENT '{"allow_question_generation": true, "session_length": 30}',
 
     FOREIGN KEY (creator_id) REFERENCES creators(id) ON DELETE CASCADE,
     FULLTEXT idx_search (title, description),
@@ -101,14 +101,19 @@ COMMENT='Learning topics within units';
 CREATE TABLE materials (
     id INT AUTO_INCREMENT PRIMARY KEY,
     topic_id INT NOT NULL,
+    course_id INT NOT NULL,
     material_type ENUM('pdf', 'ppt', 'pptx', 'video', 'text', 'docx', 'other') NOT NULL,
     file_path VARCHAR(512) NOT NULL,
     original_filename VARCHAR(255),
-    metadata JSON DEFAULT NULL COMMENT '{"page_count": 0, "duration_seconds": 0, "size_bytes": 0}',
+    course_metadata JSON DEFAULT NULL COMMENT '{"page_count": 0, "duration_seconds": 0, "size_bytes": 0}',
     uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    processing_status ENUM('pending', 'processing', 'completed', 'error') DEFAULT 'pending',
+    chunks_count INT DEFAULT 0,
 
     FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE CASCADE,
+    FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE CASCADE,
     INDEX idx_topic (topic_id),
+    INDEX idx_course (course_id),
     INDEX idx_type (material_type)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 COMMENT='Course materials (PDFs, slides, videos, etc.)';
@@ -120,17 +125,20 @@ COMMENT='Course materials (PDFs, slides, videos, etc.)';
 CREATE TABLE quiz_questions (
     id INT AUTO_INCREMENT PRIMARY KEY,
     topic_id INT NOT NULL,
+    course_id INT NOT NULL,
     question_text TEXT NOT NULL,
     question_type ENUM('multiple_choice', 'true_false', 'short_answer', 'essay') NOT NULL,
     options JSON DEFAULT NULL COMMENT 'For multiple choice: [{"text": "Option A", "is_correct": false}]',
     correct_answer TEXT,
     rubric TEXT COMMENT 'Grading criteria for open-ended questions',
     difficulty ENUM('easy', 'medium', 'hard') DEFAULT 'medium',
-    metadata JSON DEFAULT NULL COMMENT '{"tags": [], "concepts_tested": []}',
+    course_metadata JSON DEFAULT NULL COMMENT '{"tags": [], "concepts_tested": []}',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
     FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE CASCADE,
+    FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE CASCADE,
     INDEX idx_topic (topic_id),
+    INDEX idx_course (course_id),
     INDEX idx_difficulty (difficulty)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 COMMENT='Quiz questions bank';
@@ -147,6 +155,11 @@ CREATE TABLE constructor_sessions (
     completed_at TIMESTAMP NULL,
     status ENUM('in_progress', 'completed', 'abandoned') DEFAULT 'in_progress',
     messages_json JSON DEFAULT NULL COMMENT 'Full conversation history',
+    phase VARCHAR(50) DEFAULT 'welcome',
+    files_uploaded INT DEFAULT 0,
+    files_processed INT DEFAULT 0,
+    topics_created INT DEFAULT 0,
+    questions_created INT DEFAULT 0,
 
     FOREIGN KEY (creator_id) REFERENCES creators(id) ON DELETE CASCADE,
     INDEX idx_creator (creator_id),

@@ -5,6 +5,7 @@ Each node represents a step in the course construction workflow.
 
 import json
 import logging
+import re
 from datetime import datetime
 from typing import Any, Dict, Literal
 
@@ -12,8 +13,14 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import END
 
 from app.agents.base.llm import get_llm
+from app.agents.base.message_utils import is_assistant_message, message_content, message_role
 from app.agents.base.utils import langchain_to_messages, messages_to_langchain
-from app.agents.constructor.state import ConstructorState, create_initial_constructor_state
+from app.agents.constructor.state import (
+    ConstructorState,
+    create_initial_constructor_state,
+    resolve_creator_id,
+)
+from app.agents.constructor.tools.storage import create_course_record, update_course_record
 from .prompts import (
     COORDINATOR_SYSTEM_PROMPT,
     NEXT_ACTION_PROMPT,
@@ -106,11 +113,53 @@ async def intake_node(state: ConstructorState) -> Dict[str, Any]:
     assistant_text = (getattr(response, "content", "") or "").strip()
     if not assistant_text:
         assistant_text = _default_coordinator_reply(state)
+    elif _has_course_basics(state) and _looks_like_basics_request(assistant_text):
+        assistant_text = _default_coordinator_reply(state)
 
-    # Extract course info from conversation if in info_gathering phase
-    course_info_updates = {}
+    # Extract course info from conversation if in info_gathering phase.
+    # Use deterministic parsing first, then enrich via LLM extraction.
+    course_info_updates: Dict[str, Any] = _extract_course_info_heuristic(state)
     if state.get("phase") == "info_gathering":
-        course_info_updates = await _extract_course_info(state, assistant_text)
+        llm_updates = await _extract_course_info(state, assistant_text)
+        course_info_updates = _merge_course_info_updates(course_info_updates, llm_updates)
+    merged_course_info = {**state.get("course_info", {}), **course_info_updates}
+
+    # Ensure a concrete course record exists once we have required basics.
+    # This keeps downstream ingestion/structure/quiz steps aligned to a real DB course_id.
+    course_id = state.get("course_id")
+    has_min_course_info = bool(
+        merged_course_info.get("title") and merged_course_info.get("description")
+    )
+    creator_id = resolve_creator_id(state.get("creator_id"), state.get("session_id", ""))
+
+    if has_min_course_info and not course_id and creator_id is not None:
+        try:
+            create_result = await create_course_record.ainvoke(
+                {
+                    "creator_id": creator_id,
+                    "title": merged_course_info.get("title"),
+                    "description": merged_course_info.get("description"),
+                    "difficulty": merged_course_info.get("difficulty", "beginner"),
+                }
+            )
+            if create_result.get("success") and create_result.get("course_id"):
+                course_id = int(create_result["course_id"])
+        except Exception as exc:
+            logger.warning("Failed to create course record: %s", exc)
+
+    # If course basics were updated after creation, keep DB record in sync.
+    if course_id and course_info_updates:
+        try:
+            await update_course_record.ainvoke(
+                {
+                    "course_id": int(course_id),
+                    "title": merged_course_info.get("title"),
+                    "description": merged_course_info.get("description"),
+                    "difficulty": merged_course_info.get("difficulty", "beginner"),
+                }
+            )
+        except Exception as exc:
+            logger.warning("Failed to update course record %s: %s", course_id, exc)
 
     return {
         "messages": [{
@@ -118,7 +167,9 @@ async def intake_node(state: ConstructorState) -> Dict[str, Any]:
             "content": assistant_text,
             "timestamp": datetime.utcnow().isoformat(),
         }],
-        "course_info": {**state.get("course_info", {}), **course_info_updates},
+        "course_info": merged_course_info,
+        "course_id": course_id,
+        **({"creator_id": creator_id} if creator_id is not None else {}),
         "updated_at": datetime.utcnow().isoformat(),
     }
 
@@ -218,6 +269,26 @@ async def respond_node(state: ConstructorState) -> Dict[str, Any]:
 
     This is the default node for conversational responses.
     """
+    # If a sub-agent already produced an assistant message this turn,
+    # don't generate an extra coordinator reply.
+    pipeline_actions = {
+        "process_files",
+        "analyze_structure",
+        "generate_quizzes",
+        "validate_course",
+    }
+    pending_action = state.get("pending_subagent")
+    messages = state.get("messages", [])
+    if (
+        pending_action in pipeline_actions
+        and messages
+        and is_assistant_message(messages[-1])
+    ):
+        return {
+            "pending_subagent": None,
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+
     llm = get_llm(temperature=0.7)
 
     # Build context for response
@@ -237,6 +308,8 @@ async def respond_node(state: ConstructorState) -> Dict[str, Any]:
     assistant_text = (getattr(response, "content", "") or "").strip()
     if not assistant_text:
         assistant_text = _default_coordinator_reply(state)
+    elif _has_course_basics(state) and _looks_like_basics_request(assistant_text):
+        assistant_text = _default_coordinator_reply(state)
 
     return {
         "messages": [{
@@ -255,7 +328,39 @@ async def finalize_node(state: ConstructorState) -> Dict[str, Any]:
 
     This node marks the course as complete and ready for students.
     """
-    course_title = state.get("course_info", {}).get("title", "Your Course")
+    course_info = state.get("course_info", {})
+    course_title = course_info.get("title", "Your Course")
+    course_id = state.get("course_id")
+    creator_id = resolve_creator_id(state.get("creator_id"), state.get("session_id", ""))
+
+    # Ensure there's a persisted course and mark it published.
+    try:
+        if (
+            not course_id
+            and creator_id is not None
+            and course_info.get("title")
+            and course_info.get("description")
+        ):
+            created = await create_course_record.ainvoke(
+                {
+                    "creator_id": creator_id,
+                    "title": course_info.get("title"),
+                    "description": course_info.get("description"),
+                    "difficulty": course_info.get("difficulty", "beginner"),
+                }
+            )
+            if created.get("success") and created.get("course_id"):
+                course_id = int(created["course_id"])
+
+        if course_id:
+            await update_course_record.ainvoke(
+                {
+                    "course_id": int(course_id),
+                    "is_published": True,
+                }
+            )
+    except Exception as exc:
+        logger.warning("Failed to finalize/publish course record: %s", exc)
 
     message = PROGRESS_MESSAGES["course_published"].format(title=course_title)
 
@@ -265,6 +370,8 @@ async def finalize_node(state: ConstructorState) -> Dict[str, Any]:
             "content": message,
             "timestamp": datetime.utcnow().isoformat(),
         }],
+        "course_id": course_id,
+        **({"creator_id": creator_id} if creator_id is not None else {}),
         "phase": "complete",
         "progress": 1.0,
         "current_agent": "coordinator",
@@ -314,10 +421,139 @@ Return JSON with only the fields that can be extracted or updated:
 
         if "```json" in content:
             content = content.split("```json")[1].split("```")[0]
-
-        return json.loads(content.strip())
+        parsed = _extract_json_object(content.strip())
+        if not isinstance(parsed, dict):
+            return {}
+        return _normalize_course_info(parsed)
     except Exception:
         return {}
+
+
+def _extract_json_object(text: str) -> Any:
+    """Extract a JSON object from raw model output."""
+    if not text:
+        return {}
+
+    # Fast path: whole payload is JSON.
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+
+    # Fallback: first {...} block in the response.
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        try:
+            return json.loads(text[start:end + 1])
+        except Exception:
+            return {}
+    return {}
+
+
+def _normalize_difficulty(value: str) -> str:
+    """Normalize difficulty values to supported canonical values."""
+    lowered = (value or "").strip().lower()
+    if not lowered:
+        return ""
+    if "beginner" in lowered:
+        return "beginner"
+    if "intermediate" in lowered:
+        return "intermediate"
+    if "advanced" in lowered:
+        return "advanced"
+    # Keep unknown values out to avoid polluting state with free-form labels.
+    return ""
+
+
+def _normalize_course_info(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize and sanitize extracted course info fields."""
+    updates: Dict[str, Any] = {}
+
+    title = " ".join(str(raw.get("title", "")).split()).strip()
+    description = str(raw.get("description", "")).strip()
+    difficulty = _normalize_difficulty(str(raw.get("difficulty", "")))
+    tags = raw.get("tags")
+
+    if title:
+        updates["title"] = title[:255]
+    if description:
+        updates["description"] = description
+    if difficulty:
+        updates["difficulty"] = difficulty
+    if isinstance(tags, list):
+        normalized_tags = [str(t).strip() for t in tags if str(t).strip()]
+        if normalized_tags:
+            updates["tags"] = normalized_tags
+
+    return updates
+
+
+def _merge_course_info_updates(
+    base_updates: Dict[str, Any],
+    llm_updates: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Merge extraction updates with deterministic values taking precedence."""
+    merged = dict(base_updates or {})
+    for key, value in (llm_updates or {}).items():
+        if key not in merged or not merged.get(key):
+            merged[key] = value
+    return merged
+
+
+def _extract_course_info_heuristic(state: ConstructorState) -> Dict[str, Any]:
+    """Deterministically extract course info from recent user messages."""
+    messages = state.get("messages", [])
+    user_texts = [
+        message_content(m)
+        for m in messages[-8:]
+        if message_role(m) == "user"
+    ]
+    if not user_texts:
+        return {}
+
+    combined = "\n".join(t for t in user_texts if t).strip()
+    if not combined:
+        return {}
+
+    updates: Dict[str, Any] = {}
+
+    title_match = re.search(
+        r"(?im)^\s*(?:course\s*title|title)(?:\s*\([^)]*\))?\s*:\s*(.+)$",
+        combined,
+    )
+    if title_match:
+        updates["title"] = title_match.group(1).strip()
+
+    desc_match = re.search(
+        r"(?is)(?:^|\n)\s*(?:description|goal|objective)(?:\s*\([^)]*\))?\s*:\s*(.+?)"
+        r"(?=(?:\n\s*(?:course\s*title|title|difficulty(?:\s*level)?|description|goal|objective)"
+        r"(?:\s*\([^)]*\))?\s*:)|\Z)",
+        combined,
+    )
+    if desc_match:
+        updates["description"] = desc_match.group(1).strip()
+
+    diff_match = re.search(
+        r"(?im)^\s*(?:difficulty(?:\s*level)?)(?:\s*\([^)]*\))?\s*:\s*(.+)$",
+        combined,
+    )
+    if diff_match:
+        normalized = _normalize_difficulty(diff_match.group(1))
+        if normalized:
+            updates["difficulty"] = normalized
+
+    # Secondary fallback: if title/description are still missing, try compact patterns.
+    if "title" not in updates:
+        m = re.search(r"(?i)\bmy course(?: title)? is\s+(.+?)(?:[.\n]|$)", combined)
+        if m:
+            updates["title"] = m.group(1).strip()
+    if "description" not in updates:
+        m = re.search(r"(?i)\b(?:students will|learners will|goal is to)\s+(.+?)(?:[.\n]|$)", combined)
+        if m:
+            updates["description"] = m.group(1).strip()
+
+    return _normalize_course_info(updates)
 
 
 def _determine_default_action(state: ConstructorState) -> str:
@@ -329,11 +565,8 @@ def _determine_default_action(state: ConstructorState) -> str:
     topics = state.get("topics", [])
     questions = state.get("quiz_questions", [])
 
-    if phase in ["welcome", "info_gathering"]:
-        if not course_info.get("title") or not course_info.get("description"):
-            return "collect_info"
-        return "request_files"
-
+    # Prioritize concrete workflow progression whenever files/results exist,
+    # even if phase is still marked as info_gathering.
     if uploaded_files and len(processed_files) < len(uploaded_files):
         return "process_files"
 
@@ -349,12 +582,22 @@ def _determine_default_action(state: ConstructorState) -> str:
     if state.get("validation_passed"):
         return "finalize"
 
+    if phase in ["welcome", "info_gathering"]:
+        if not course_info.get("title") or not course_info.get("description"):
+            return "collect_info"
+        return "request_files"
+
     return "respond"
 
 
 def _default_coordinator_reply(state: ConstructorState) -> str:
     """Fallback assistant reply when the model returns empty content."""
     course_info = state.get("course_info", {})
+    uploaded_files = state.get("uploaded_files", [])
+    processed_files = state.get("processed_files", [])
+    topics = state.get("topics", [])
+    questions = state.get("quiz_questions", [])
+
     if not course_info.get("title") or not course_info.get("description"):
         return (
             "Let's start with your course basics. Please share:\n"
@@ -362,12 +605,41 @@ def _default_coordinator_reply(state: ConstructorState) -> str:
             "2) Short description\n"
             "3) Difficulty (beginner/intermediate/advanced)"
         )
-    if not state.get("uploaded_files"):
+    if not uploaded_files:
         return (
             "Great, I have the course basics. Next, upload your materials "
             "(PDF, PPT/PPTX, DOCX, TXT, or video) so I can process them."
         )
-    return "Got it. Tell me what you want to do next, and I'll guide you step by step."
+    if len(processed_files) < len(uploaded_files):
+        return (
+            "I can see uploaded material is pending processing. "
+            "Say 'create the course now' and I'll start ingestion."
+        )
+    if processed_files and not topics:
+        return "Your files are processed. Next step is structure analysis."
+    if topics and not questions:
+        return "Course structure is ready. Next step is quiz generation."
+    if questions and not state.get("validation_passed"):
+        return "Quiz bank is ready. Next step is validation before publishing."
+    if state.get("validation_passed"):
+        return "Validation passed. Finalizing and publishing your course."
+    return "Tell me what you want to do next and I'll continue the workflow."
+
+
+def _has_course_basics(state: ConstructorState) -> bool:
+    """Return True when required course basics are already present in state."""
+    info = state.get("course_info", {})
+    return bool(info.get("title") and info.get("description"))
+
+
+def _looks_like_basics_request(text: str) -> bool:
+    """Heuristic: detect responses that re-ask for title/description/difficulty."""
+    lowered = (text or "").lower()
+    return (
+        ("title" in lowered or "course title" in lowered)
+        and ("description" in lowered or "summary" in lowered or "goal" in lowered)
+        and ("difficulty" in lowered or "beginner" in lowered or "intermediate" in lowered or "advanced" in lowered)
+    )
 
 
 # =============================================================================
@@ -377,6 +649,14 @@ def _default_coordinator_reply(state: ConstructorState) -> str:
 def route_by_phase(state: ConstructorState) -> str:
     """Route to appropriate node based on phase and state."""
     action = state.get("pending_subagent", "respond")
+
+    # Check if we just sent a response and should wait for user input
+    # If the last message was from assistant (not user), end the turn
+    messages = state.get("messages", [])
+    just_responded = (
+        len(messages) > 0 and
+        is_assistant_message(messages[-1])
+    )
 
     action_to_node = {
         # Intake already generated assistant guidance for this turn.
@@ -388,17 +668,40 @@ def route_by_phase(state: ConstructorState) -> str:
         "generate_quizzes": "dispatch",
         "validate_course": "dispatch",
         "finalize": "finalize",
-        "respond": "end_turn",
+        "respond": "end_turn" if just_responded else "respond",
     }
+
+    # Special case: if we're in info_gathering with no course info yet,
+    # and we just responded, end turn to wait for user input
+    if (
+        state.get("phase") == "info_gathering" and
+        not state.get("course_info", {}).get("title") and
+        just_responded
+    ):
+        return "end_turn"
 
     return action_to_node.get(action, "end_turn")
 
 
 def should_continue(state: ConstructorState) -> str:
     """Determine if the workflow should continue or end."""
+    # End if phase is complete
     if state.get("phase") == "complete":
         return "end"
-    return "continue"
+
+    # Check if there's a new user message (last message is from user)
+    messages = state.get("messages", [])
+    if len(messages) == 0:
+        return "continue"
+
+    last_message = messages[-1]
+    # If the last message was from the user, continue processing
+    # If it was from the assistant, we've already responded - end to wait for new input
+    if message_role(last_message) == "user":
+        return "continue"
+
+    # Last message was from assistant - we've completed our response, end turn
+    return "end"
 
 
 def route_subagent(state: ConstructorState) -> str:

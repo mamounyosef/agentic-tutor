@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from .core.config import settings
 from .observability.langsmith import initialize_langsmith
 from .api import auth, constructor, tutor
+from .db.constructor.compat import ensure_constructor_schema_compatibility
 
 
 @asynccontextmanager
@@ -18,6 +19,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Startup
     print(f"{settings.APP_NAME} starting up...")
     initialize_langsmith(settings)
+    try:
+        await ensure_constructor_schema_compatibility()
+    except Exception as exc:  # pragma: no cover - fail-open for local startup
+        print(f"WARNING: constructor DB compatibility migration skipped: {exc}")
     yield
     # Shutdown
     print(f"{settings.APP_NAME} shutting down...")

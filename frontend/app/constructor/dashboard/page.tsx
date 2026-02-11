@@ -6,7 +6,7 @@ import Link from "next/link"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
@@ -30,6 +30,7 @@ import {
 import { useAuthStore } from "@/lib/store"
 import { constructorApi } from "@/lib/api"
 import { cn } from "@/lib/utils"
+import { ChatMarkdown } from "@/components/chat-markdown"
 
 interface Message {
   id: string
@@ -61,12 +62,12 @@ export default function ConstructorDashboard() {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const wsRef = useRef<WebSocket | null>(null)
-  const initializedRef = useRef(false)
+  const initRequestIdRef = useRef(0)
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const reconnectAttemptsRef = useRef(0)
+  const allowReconnectRef = useRef(true)
 
   useEffect(() => {
-    if (initializedRef.current) return
-    initializedRef.current = true
-
     if (!creatorToken) {
       router.push("/auth/login")
       return
@@ -76,8 +77,15 @@ export default function ConstructorDashboard() {
     initializeSession()
 
     return () => {
+      allowReconnectRef.current = false
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current)
+        reconnectTimerRef.current = null
+      }
+      initRequestIdRef.current += 1
       if (wsRef.current) {
         wsRef.current.close()
+        wsRef.current = null
       }
     }
   }, [])
@@ -87,8 +95,11 @@ export default function ConstructorDashboard() {
   }, [messages])
 
   const initializeSession = async () => {
+    const requestId = ++initRequestIdRef.current
     try {
       const response = await constructorApi.startSession()
+      if (requestId !== initRequestIdRef.current) return
+
       setSessionId(response.session_id)
 
       // Add welcome message
@@ -102,19 +113,57 @@ export default function ConstructorDashboard() {
       // Connect WebSocket for streaming
       connectWebSocket(response.session_id)
     } catch (error: any) {
+      if (requestId !== initRequestIdRef.current) return
       toast.error("Failed to initialize session")
     }
   }
 
+  const resolveWebSocketBase = () => {
+    const wsProtocol = window.location.protocol === "https:" ? "wss" : "ws"
+    const configuredBase = process.env.NEXT_PUBLIC_WS_URL || process.env.NEXT_PUBLIC_API_URL
+
+    if (configuredBase) {
+      try {
+        const url = new URL(configuredBase)
+        // Guard against accidental ws through Next dev proxy on :3000.
+        if (
+          url.port === "3000" &&
+          (url.hostname === "localhost" || url.hostname === "127.0.0.1")
+        ) {
+          return `${wsProtocol}://localhost:8000`
+        }
+        const protocol = url.protocol === "https:" ? "wss" : "ws"
+        return `${protocol}://${url.host}`
+      } catch {
+        // Fall through to localhost backend default.
+      }
+    }
+
+    return `${wsProtocol}://${window.location.hostname}:8000`
+  }
+
   const connectWebSocket = (sessionId: string) => {
-    const apiBase = process.env.NEXT_PUBLIC_API_URL || `${window.location.protocol}//${window.location.host}`
-    const wsBase = apiBase.replace(/^http/, "ws")
+    if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
+      return
+    }
+
+    if (wsRef.current) {
+      wsRef.current.close()
+      wsRef.current = null
+    }
+
+    const wsBase = resolveWebSocketBase()
     const wsUrl = `${wsBase}/api/v1/constructor/session/ws/${sessionId}`
 
     wsRef.current = new WebSocket(wsUrl)
 
     wsRef.current.onopen = () => {
       setIsConnected(true)
+      reconnectAttemptsRef.current = 0
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current)
+        reconnectTimerRef.current = null
+      }
     }
 
     wsRef.current.onmessage = (event) => {
@@ -182,11 +231,23 @@ export default function ConstructorDashboard() {
 
     wsRef.current.onclose = () => {
       setIsConnected(false)
+      wsRef.current = null
+      if (!allowReconnectRef.current) return
+      if (reconnectTimerRef.current) return
+
+      const attempt = Math.min(reconnectAttemptsRef.current + 1, 6)
+      reconnectAttemptsRef.current = attempt
+      const delayMs = Math.min(1000 * (2 ** (attempt - 1)), 10000)
+
+      reconnectTimerRef.current = setTimeout(() => {
+        reconnectTimerRef.current = null
+        connectWebSocket(sessionId)
+      }, delayMs)
     }
 
     wsRef.current.onerror = () => {
       setIsConnected(false)
-      toast.error("WebSocket connection error. Falling back to HTTP when needed.")
+      // onclose will schedule reconnect; keep this quiet to avoid toast spam.
     }
   }
 
@@ -270,6 +331,8 @@ export default function ConstructorDashboard() {
           type: "upload",
           file_ids: newFiles.map((f) => f.id),
         }))
+      } else if (sessionId) {
+        connectWebSocket(sessionId)
       }
 
       // Simulate processing completion
@@ -356,7 +419,7 @@ export default function ConstructorDashboard() {
                       isConnected ? "text-green-500" : "text-yellow-500"
                     )}>
                       <span className="connection-dot connected" />
-                      {isConnected ? "Connected" : "Connecting..."}
+                      {isConnected ? "Connected" : "Reconnecting..."}
                     </span>
                   </div>
                   {phase && (
@@ -474,7 +537,11 @@ export default function ConstructorDashboard() {
                               : "bg-muted text-foreground rounded-bl-sm"
                           )}
                         >
-                          <p className="whitespace-pre-wrap">{message.content}</p>
+                          {message.role === "assistant" ? (
+                            <ChatMarkdown content={message.content} />
+                          ) : (
+                            <p className="whitespace-pre-wrap">{message.content}</p>
+                          )}
                           {message.isStreaming && (
                             <span className="inline-block w-1 h-4 bg-current animate-pulse ml-1" />
                           )}
@@ -499,12 +566,12 @@ export default function ConstructorDashboard() {
                 {/* Input */}
                 <div className="p-4 border-t border-border/50">
                   <div className="flex gap-2">
-                    <Input
+                    <Textarea
                       placeholder="Tell me about your course..."
                       value={inputMessage}
                       onChange={(e) => setInputMessage(e.target.value)}
                       onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && (e.preventDefault(), handleSendMessage())}
-                      className="flex-1"
+                      className="flex-1 min-h-[44px] max-h-40 resize-y"
                     />
                     <Button
                       onClick={handleSendMessage}

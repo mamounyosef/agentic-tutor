@@ -12,7 +12,11 @@ from sqlalchemy import select, func
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel
 
-from app.agents.base.message_utils import append_user_message, latest_assistant_content
+from app.agents.base.message_utils import (
+    append_user_message,
+    latest_assistant_after_last_user,
+    latest_assistant_content,
+)
 from app.core.config import Settings, get_settings
 from app.db.constructor.models import Course, Unit, Topic
 from app.db.tutor.models import Student, Enrollment, Mastery, TutorSession
@@ -194,6 +198,9 @@ async def tutor_websocket(
                         "Thinking...",
                         phase="processing",
                     )
+                    # Prevent duplicate assistant payloads across multiple node
+                    # events in the same user turn.
+                    last_streamed_assistant: str | None = None
 
                     trace_config = build_trace_config(
                         thread_id=session_id,
@@ -215,18 +222,20 @@ async def tutor_websocket(
                             if node_output and isinstance(node_output, dict):
                                 # Extract and send any AI messages
                                 node_messages = node_output.get("messages", [])
-                                content = latest_assistant_content(node_messages)
-                                if content:
+                                content = latest_assistant_after_last_user(node_messages)
+                                normalized_content = content.strip() if content else ""
+                                if normalized_content and normalized_content != last_streamed_assistant:
                                     # Stream token by token (chunked)
                                     chunk_size = 10
-                                    for i in range(0, len(content), chunk_size):
-                                        chunk = content[i:i + chunk_size]
+                                    for i in range(0, len(normalized_content), chunk_size):
+                                        chunk = normalized_content[i:i + chunk_size]
                                         await manager.send_token(
                                             session_id,
                                             chunk,
                                             is_first=(i == 0),
-                                            is_last=(i + chunk_size >= len(content)),
+                                            is_last=(i + chunk_size >= len(normalized_content)),
                                         )
+                                    last_streamed_assistant = normalized_content
 
                                 # Send status updates
                                 current_topic = node_output.get("current_topic")

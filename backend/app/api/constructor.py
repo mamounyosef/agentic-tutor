@@ -9,7 +9,11 @@ from sqlalchemy import select
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel
 
-from app.agents.base.message_utils import append_user_message, latest_assistant_content
+from app.agents.base.message_utils import (
+    append_user_message,
+    latest_assistant_after_last_user,
+    latest_assistant_content,
+)
 from app.core.config import Settings, get_settings
 from app.db.constructor.models import Course, Creator
 from app.db.base import get_constructor_session
@@ -20,7 +24,11 @@ from app.observability.langsmith import build_trace_config
 # Import Constructor agents
 from app.agents.constructor.coordinator.agent import build_coordinator_graph, CoordinatorGraph
 from app.agents.constructor.coordinator.prompts import WELCOME_MESSAGE
-from app.agents.constructor.state import ConstructorState, create_initial_constructor_state
+from app.agents.constructor.state import (
+    ConstructorState,
+    create_initial_constructor_state,
+    resolve_creator_id,
+)
 
 # Type alias
 ConstructorGraph = CoordinatorGraph
@@ -72,6 +80,11 @@ def _llm_connection_message(settings: Settings) -> str:
         f"Expected: {settings.LLM_BASE_URL}. "
         "If you're using LM Studio, make sure the local server is running and a model is loaded."
     )
+
+
+def _resolved_creator_id(raw_creator_id: Any, session_id: str) -> Optional[int]:
+    """Resolve creator_id from message payload or session identifier."""
+    return resolve_creator_id(raw_creator_id, session_id)
 
 
 # ==============================================================================
@@ -157,6 +170,7 @@ async def constructor_websocket(
 
                 # Get or create the graph
                 graph = get_constructor_session_graph(session_id)
+                resolved_creator_id = _resolved_creator_id(data.get("creator_id"), session_id)
 
                 # Get current state
                 try:
@@ -165,12 +179,14 @@ async def constructor_websocket(
                         # Initialize new session
                         current_state = create_initial_constructor_state(
                             session_id=session_id,
-                            creator_id=data.get("creator_id"),
+                            creator_id=resolved_creator_id,
                         )
+                    elif not current_state.get("creator_id") and resolved_creator_id is not None:
+                        current_state = {**current_state, "creator_id": resolved_creator_id}
                 except Exception:
                     current_state = create_initial_constructor_state(
                         session_id=session_id,
-                        creator_id=data.get("creator_id"),
+                        creator_id=resolved_creator_id,
                     )
 
                 # Add user message to state
@@ -184,6 +200,9 @@ async def constructor_websocket(
                         "Thinking...",
                         phase="processing",
                     )
+                    # Prevent duplicate assistant payloads across multiple node
+                    # events in the same user turn.
+                    last_streamed_assistant: str | None = None
 
                     trace_config = build_trace_config(
                         thread_id=session_id,
@@ -191,7 +210,7 @@ async def constructor_websocket(
                         metadata={
                             "endpoint": "/api/v1/constructor/session/ws/{session_id}",
                             "session_id": session_id,
-                            "creator_id": data.get("creator_id"),
+                            "creator_id": resolved_creator_id,
                         },
                     )
 
@@ -204,18 +223,20 @@ async def constructor_websocket(
                             if node_output and isinstance(node_output, dict):
                                 # Extract and send any AI messages
                                 node_messages = node_output.get("messages", [])
-                                content = latest_assistant_content(node_messages)
-                                if content:
+                                content = latest_assistant_after_last_user(node_messages)
+                                normalized_content = content.strip() if content else ""
+                                if normalized_content and normalized_content != last_streamed_assistant:
                                     # Stream token by token (chunked)
                                     chunk_size = 10
-                                    for i in range(0, len(content), chunk_size):
-                                        chunk = content[i:i + chunk_size]
+                                    for i in range(0, len(normalized_content), chunk_size):
+                                        chunk = normalized_content[i:i + chunk_size]
                                         await manager.send_token(
                                             session_id,
                                             chunk,
                                             is_first=(i == 0),
-                                            is_last=(i + chunk_size >= len(content)),
+                                            is_last=(i + chunk_size >= len(normalized_content)),
                                         )
+                                    last_streamed_assistant = normalized_content
 
                                 # Send progress updates
                                 progress = node_output.get("progress")
@@ -269,7 +290,7 @@ async def constructor_websocket(
                 get_constructor_session_graph(session_id)
                 create_initial_constructor_state(
                     session_id=session_id,
-                    creator_id=data.get("creator_id"),
+                    creator_id=_resolved_creator_id(data.get("creator_id"), session_id),
                     course_info={
                         "title": data.get("course_title"),
                         "description": data.get("course_description"),
@@ -371,6 +392,9 @@ async def constructor_chat(
             )
 
         # Add user message
+        if not current_state.get("creator_id"):
+            current_state = {**current_state, "creator_id": int(current_creator.id)}
+
         messages = current_state.get("messages", [])
         messages = append_user_message(messages, request.message)
 
@@ -474,13 +498,16 @@ async def upload_materials(
                     detail=f"Unsupported file type: {file_ext}"
                 )
 
-            # Save file (supports large files with chunked reading)
+            # Save file in chunks to avoid high memory usage on large uploads.
+            file_size = 0
+            chunk_size = 1024 * 1024  # 1MB
             with open(file_path, "wb") as f:
-                content = await file.read()
-                f.write(content)
-
-            # Get file size
-            file_size = len(content)
+                while True:
+                    chunk = await file.read(chunk_size)
+                    if not chunk:
+                        break
+                    file_size += len(chunk)
+                    f.write(chunk)
 
             normalized_file_type = {
                 ".pdf": "pdf",
@@ -507,7 +534,10 @@ async def upload_materials(
             state_uploaded_files.append(state_file)
 
             # Trigger ingestion based on file type
+            # NOTE: Video processing is intentionally deferred to the ingestion
+            # graph to keep upload requests fast and avoid long blocking turns.
             ingestion_result = None
+            deferred_video_processing = False
             if file_ext == ".pdf":
                 ingestion_result = await ingest_pdf.ainvoke(
                     {
@@ -530,15 +560,11 @@ async def upload_materials(
                     }
                 )
             elif file_ext in (".mp4", ".mov", ".avi"):
-                ingestion_result = await ingest_video.ainvoke(
-                    {
-                        "file_path": str(file_path),
-                        "course_id": course_id_for_ingestion,
-                    }
-                )
+                deferred_video_processing = True
             elif file_ext == ".txt":
                 # Simple text ingestion
-                text_content = content.decode("utf-8", errors="ignore")
+                with open(file_path, "r", encoding="utf-8", errors="ignore") as txt_file:
+                    text_content = txt_file.read()
                 ingestion_result = {
                     "success": True,
                     "file_id": file_id,
@@ -550,6 +576,23 @@ async def upload_materials(
                         "original_filename": file.filename,
                     },
                 }
+
+            if deferred_video_processing:
+                state_uploaded_files[-1] = {
+                    **state_file,
+                    "status": "pending",
+                    "error_message": None,
+                }
+                uploaded_files.append({
+                    "file_id": file_id,
+                    "filename": file.filename,
+                    "size": file_size,
+                    "type": file_ext[1:],
+                    "status": "queued",
+                    "chunks": 0,
+                    "message": "Video queued for processing in the ingestion step.",
+                })
+                continue
 
             result_success = bool(ingestion_result and ingestion_result.get("success"))
             result_error = ingestion_result.get("error") if ingestion_result else "Unknown ingestion error"
@@ -603,6 +646,11 @@ async def upload_materials(
             raise
         except Exception as e:
             logger.error(f"Error uploading file {file.filename}: {e}")
+            try:
+                if file_path.exists():
+                    file_path.unlink()
+            except Exception:
+                pass
             uploaded_files.append({
                 "file_id": file_id,
                 "filename": file.filename,
@@ -616,7 +664,7 @@ async def upload_materials(
             "uploaded_files": state_uploaded_files,
             "processed_files": state_processed_files,
             "content_chunks": state_content_chunks,
-            "phase": "ingestion_complete" if state_processed_files else current_state.get("phase", "upload"),
+            "phase": "ingestion_complete" if state_processed_files else "upload",
             "updated_at": datetime.utcnow().isoformat(),
         }
     )

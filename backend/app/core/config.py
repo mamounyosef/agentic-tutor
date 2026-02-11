@@ -87,7 +87,7 @@ class Settings(BaseSettings):
 
     # File Storage
     UPLOAD_DIR: str = "./uploads/materials"
-    UPLOAD_PATH: str = "./uploads"  # Base upload path
+    UPLOAD_PATH: str = "../uploads"  # Base upload path (outside backend/ to avoid reload disruptions)
     MAX_UPLOAD_SIZE: int = 524288000  # 500MB in bytes (for large courses with videos)
     ALLOWED_EXTENSIONS: str = ".pdf,.ppt,.pptx,.doc,.docx,.txt,.mp4,.mov,.avi,.mkv"
 
@@ -107,6 +107,12 @@ class Settings(BaseSettings):
     TRANSCRIPTION_DEVICE: str = "cuda"  # "cuda" for GPU (RTX 4060), "cpu" as fallback
     TRANSCRIPTION_COMPUTE_TYPE: str = "float16"  # float16 for GPU, int8 for CPU, float32 for accuracy
     TRANSCRIPTION_LANGUAGE: str = "auto"  # "auto" for auto-detect or specific language code (e.g., "en", "es")
+    TRANSCRIPTION_TIMEOUT_SECONDS: int = 1200  # 20 minutes
+    TRANSCRIPTION_MAX_FILE_SIZE_MB: int = 500
+    TRANSCRIPTION_MAX_DURATION_SECONDS: int = 7200  # 2 hours
+    TRANSCRIPTION_FFPROBE_TIMEOUT_SECONDS: int = 30
+    TRANSCRIPTION_WORD_TIMESTAMPS: bool = False
+    TRANSCRIPTION_MAX_SEGMENTS_METADATA: int = 400
     # OpenAI API fallback (optional, requires API key)
     TRANSCRIPTION_API_KEY: str = Field(default="", description="OpenAI API key for transcription fallback")
     TRANSCRIPTION_OPENAI_MODEL: str = "whisper-1"

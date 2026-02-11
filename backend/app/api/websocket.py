@@ -34,6 +34,12 @@ class ConnectionManager:
             session_id: Unique session identifier
             websocket: The WebSocket connection
         """
+        if session_id in self.active_connections:
+            old_websocket = self.active_connections[session_id]
+            try:
+                await old_websocket.close()
+            except Exception:
+                pass
         await websocket.accept()
         self.active_connections[session_id] = websocket
         logger.info(f"WebSocket connected for session: {session_id}")
