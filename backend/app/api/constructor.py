@@ -1,24 +1,21 @@
 """Constructor API endpoints for course creation workflow."""
 
-import asyncio
 import logging
-import time
 from pathlib import Path
 from typing import Any, Optional
 
 from sqlalchemy import select
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from langchain_core.messages import HumanMessage
-
+from app.agents.base.message_utils import append_user_message, latest_assistant_content
 from app.core.config import Settings, get_settings
 from app.db.constructor.models import Course, Creator
 from app.db.base import get_constructor_session
 from app.api.auth import get_current_creator
-from app.api.websocket import manager, stream_langgraph_events
+from app.api.websocket import manager
+from app.observability.langsmith import build_trace_config
 
 # Import Constructor agents
 from app.agents.constructor.coordinator.agent import build_coordinator_graph, CoordinatorGraph
@@ -142,6 +139,7 @@ async def constructor_websocket(
 
     This provides real-time, token-by-token streaming of agent responses.
     """
+    settings = get_settings()
     await manager.connect(session_id, websocket)
     logger.info(f"Constructor WebSocket connected for session: {session_id}")
 
@@ -177,7 +175,7 @@ async def constructor_websocket(
 
                 # Add user message to state
                 messages = current_state.get("messages", [])
-                messages.append(HumanMessage(content=user_message))
+                messages = append_user_message(messages, user_message)
 
                 # Stream the graph execution
                 try:
@@ -187,28 +185,37 @@ async def constructor_websocket(
                         phase="processing",
                     )
 
+                    trace_config = build_trace_config(
+                        thread_id=session_id,
+                        tags=["constructor", "websocket"],
+                        metadata={
+                            "endpoint": "/api/v1/constructor/session/ws/{session_id}",
+                            "session_id": session_id,
+                            "creator_id": data.get("creator_id"),
+                        },
+                    )
+
                     async for event in graph.stream(
                         {**current_state, "messages": messages},
+                        config=trace_config,
                     ):
                         # Stream events to client
                         for node_name, node_output in event.items():
                             if node_output and isinstance(node_output, dict):
                                 # Extract and send any AI messages
                                 node_messages = node_output.get("messages", [])
-                                for msg in node_messages:
-                                    if hasattr(msg, "type") and msg.type == "ai":
-                                        content = msg.content
-                                        if content:
-                                            # Stream token by token (chunked)
-                                            chunk_size = 10
-                                            for i in range(0, len(content), chunk_size):
-                                                chunk = content[i:i + chunk_size]
-                                                await manager.send_token(
-                                                    session_id,
-                                                    chunk,
-                                                    is_first=(i == 0),
-                                                    is_last=(i + chunk_size >= len(content)),
-                                                )
+                                content = latest_assistant_content(node_messages)
+                                if content:
+                                    # Stream token by token (chunked)
+                                    chunk_size = 10
+                                    for i in range(0, len(content), chunk_size):
+                                        chunk = content[i:i + chunk_size]
+                                        await manager.send_token(
+                                            session_id,
+                                            chunk,
+                                            is_first=(i == 0),
+                                            is_last=(i + chunk_size >= len(content)),
+                                        )
 
                                 # Send progress updates
                                 progress = node_output.get("progress")
@@ -217,7 +224,7 @@ async def constructor_websocket(
                                         session_id,
                                         f"Progress: {int(progress * 100)}%",
                                         progress=progress,
-                                        phase=node_output.get("construction_phase", "working"),
+                                        phase=node_output.get("phase", "working"),
                                     )
 
                                 # Send any validation results
@@ -317,7 +324,7 @@ async def start_constructor_session(
     session_id = f"constructor_{current_creator.id}_{int(time.time())}"
 
     # Create initial state
-    initial_state = create_initial_constructor_state(
+    create_initial_constructor_state(
         session_id=session_id,
         creator_id=current_creator.id,
         course_info={
@@ -365,23 +372,27 @@ async def constructor_chat(
 
         # Add user message
         messages = current_state.get("messages", [])
-        messages.append(HumanMessage(content=request.message))
+        messages = append_user_message(messages, request.message)
 
         # Invoke graph
-        result = await graph.invoke({**current_state, "messages": messages})
+        trace_config = build_trace_config(
+            thread_id=session_id,
+            tags=["constructor", "rest"],
+            metadata={
+                "endpoint": "/api/v1/constructor/session/chat",
+                "session_id": session_id,
+                "creator_id": current_creator.id,
+            },
+        )
+        result = await graph.invoke({**current_state, "messages": messages}, config=trace_config)
 
         # Extract AI response
-        response = "I understand. Please continue."
-        messages = result.get("messages", [])
-        for msg in messages:
-            if hasattr(msg, "type") and msg.type == "ai":
-                response = msg.content
-                break
+        response = latest_assistant_content(result.get("messages", [])) or "I understand. Please continue."
 
         return {
             "session_id": session_id,
             "response": response,
-            "construction_phase": result.get("construction_phase", "info_gathering"),
+            "construction_phase": result.get("phase", "info_gathering"),
             "progress": result.get("progress", 0),
         }
 
@@ -420,14 +431,28 @@ async def upload_materials(
     """
     import uuid
 
+    from datetime import datetime
+
     from app.agents.constructor.tools.ingestion import (
-        get_ingestion_storage_path,
+        chunk_content_by_semantic,
+        ingest_docx,
         ingest_pdf,
         ingest_ppt,
         ingest_video,
     )
 
     uploaded_files = []
+    graph = get_constructor_session_graph(session_id)
+    current_state = graph.get_state()
+    if current_state is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Session not found. Please start a new session.",
+        )
+
+    state_uploaded_files = list(current_state.get("uploaded_files", []))
+    state_processed_files = list(current_state.get("processed_files", []))
+    state_content_chunks = list(current_state.get("content_chunks", []))
 
     # Create upload directory
     upload_dir = Path(settings.UPLOAD_PATH) / "constructor" / str(current_creator.id)
@@ -457,20 +482,111 @@ async def upload_materials(
             # Get file size
             file_size = len(content)
 
+            normalized_file_type = {
+                ".pdf": "pdf",
+                ".ppt": "ppt",
+                ".pptx": "pptx",
+                ".docx": "docx",
+                ".txt": "text",
+                ".mp4": "video",
+                ".mov": "video",
+                ".avi": "video",
+            }.get(file_ext, file_ext[1:])
+
+            course_id_for_ingestion = current_state.get("course_id") or 0
+
+            state_file = {
+                "file_id": file_id,
+                "original_filename": file.filename,
+                "file_path": str(file_path),
+                "file_type": normalized_file_type,
+                "size_bytes": file_size,
+                "status": "pending",
+                "error_message": None,
+            }
+            state_uploaded_files.append(state_file)
+
             # Trigger ingestion based on file type
             ingestion_result = None
             if file_ext == ".pdf":
-                ingestion_result = await ingest_pdf(str(file_path), session_id)
+                ingestion_result = await ingest_pdf.ainvoke(
+                    {
+                        "file_path": str(file_path),
+                        "course_id": course_id_for_ingestion,
+                    }
+                )
             elif file_ext in (".ppt", ".pptx"):
-                ingestion_result = await ingest_ppt(str(file_path), session_id)
+                ingestion_result = await ingest_ppt.ainvoke(
+                    {
+                        "file_path": str(file_path),
+                        "course_id": course_id_for_ingestion,
+                    }
+                )
+            elif file_ext == ".docx":
+                ingestion_result = await ingest_docx.ainvoke(
+                    {
+                        "file_path": str(file_path),
+                        "course_id": course_id_for_ingestion,
+                    }
+                )
             elif file_ext in (".mp4", ".mov", ".avi"):
-                ingestion_result = await ingest_video(str(file_path))
+                ingestion_result = await ingest_video.ainvoke(
+                    {
+                        "file_path": str(file_path),
+                        "course_id": course_id_for_ingestion,
+                    }
+                )
             elif file_ext == ".txt":
                 # Simple text ingestion
+                text_content = content.decode("utf-8", errors="ignore")
                 ingestion_result = {
+                    "success": True,
                     "file_id": file_id,
-                    "status": "processed",
-                    "chunks_count": 1,
+                    "file_type": "text",
+                    "pages_or_slides": 1,
+                    "content": text_content,
+                    "metadata": {
+                        "course_id": course_id_for_ingestion,
+                        "original_filename": file.filename,
+                    },
+                }
+
+            result_success = bool(ingestion_result and ingestion_result.get("success"))
+            result_error = ingestion_result.get("error") if ingestion_result else "Unknown ingestion error"
+            result_content = ingestion_result.get("content", "") if ingestion_result else ""
+            created_chunks = 0
+
+            if result_success and result_content:
+                chunk_result = await chunk_content_by_semantic.ainvoke(
+                    {
+                        "content": result_content,
+                        "min_chunk_size": 200,
+                        "max_chunk_size": 1500,
+                    }
+                )
+                chunks = chunk_result.get("chunks", [])
+                for chunk in chunks:
+                    chunk["source_file"] = file_id
+                    chunk["chunk_type"] = chunk.get("chunk_type", "semantic")
+                created_chunks = len(chunks)
+                state_content_chunks.extend(chunks)
+
+            if result_success:
+                state_uploaded_files[-1] = {
+                    **state_file,
+                    "status": "completed",
+                    "error_message": None,
+                }
+                processed_file = {
+                    **state_file,
+                    "status": "completed",
+                }
+                state_processed_files.append(processed_file)
+            else:
+                state_uploaded_files[-1] = {
+                    **state_file,
+                    "status": "error",
+                    "error_message": str(result_error),
                 }
 
             uploaded_files.append({
@@ -478,8 +594,9 @@ async def upload_materials(
                 "filename": file.filename,
                 "size": file_size,
                 "type": file_ext[1:],  # Remove dot
-                "status": ingestion_result.get("status", "uploaded") if ingestion_result else "uploaded",
-                "chunks": ingestion_result.get("chunks_count", 0) if ingestion_result else 0,
+                "status": "processed" if result_success else "error",
+                "chunks": created_chunks,
+                **({"error": str(result_error)} if not result_success else {}),
             })
 
         except HTTPException:
@@ -494,11 +611,22 @@ async def upload_materials(
                 "error": str(e),
             })
 
+    graph.update_state(
+        {
+            "uploaded_files": state_uploaded_files,
+            "processed_files": state_processed_files,
+            "content_chunks": state_content_chunks,
+            "phase": "ingestion_complete" if state_processed_files else current_state.get("phase", "upload"),
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+    )
+
     return {
         "session_id": session_id,
         "uploaded_files": uploaded_files,
         "total_files": len(uploaded_files),
-        "status": "uploaded"
+        "status": "uploaded",
+        "processed_files": len([f for f in uploaded_files if f.get("status") == "processed"]),
     }
 
 
@@ -521,7 +649,7 @@ async def get_session_status(
 
         return {
             "session_id": session_id,
-            "status": state.get("construction_phase", "unknown"),
+            "status": state.get("phase", "unknown"),
             "progress": state.get("progress", 0),
             "uploaded_files_count": len(state.get("uploaded_files", [])),
             "topics_created": len(state.get("topics", [])),

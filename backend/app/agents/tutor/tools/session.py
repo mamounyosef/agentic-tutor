@@ -11,7 +11,6 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from langchain_core.tools import tool
 
 from app.vector.student_store import get_student_store
 
@@ -22,7 +21,6 @@ logger = logging.getLogger(__name__)
 # Session Lifecycle
 # =============================================================================
 
-@tool
 async def start_tutor_session(
     student_id: int,
     course_id: int,
@@ -85,7 +83,6 @@ async def start_tutor_session(
         }
 
 
-@tool
 async def end_tutor_session(
     session_id: str,
     student_id: int,
@@ -142,7 +139,6 @@ async def end_tutor_session(
 # Interaction Logging
 # =============================================================================
 
-@tool
 async def log_interaction(
     session_id: str,
     student_id: int,
@@ -202,7 +198,6 @@ async def log_interaction(
         }
 
 
-@tool
 async def log_student_feedback(
     session_id: str,
     student_id: int,
@@ -265,7 +260,6 @@ async def log_student_feedback(
 # Progress Tracking
 # =============================================================================
 
-@tool
 async def update_session_progress(
     session_id: str,
     student_id: int,
@@ -314,7 +308,6 @@ async def update_session_progress(
         }
 
 
-@tool
 async def get_session_state(
     session_id: str,
     student_id: int,
@@ -359,7 +352,6 @@ async def get_session_state(
         }
 
 
-@tool
 async def check_session_end_conditions(
     session_id: str,
     student_id: int,
@@ -423,7 +415,6 @@ async def check_session_end_conditions(
 # Session Summary
 # =============================================================================
 
-@tool
 async def generate_session_summary(
     session_id: str,
     student_id: int,

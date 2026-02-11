@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .core.config import settings
+from .observability.langsmith import initialize_langsmith
 from .api import auth, constructor, tutor
 
 
@@ -16,6 +17,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Lifespan context for startup and shutdown events."""
     # Startup
     print(f"{settings.APP_NAME} starting up...")
+    initialize_langsmith(settings)
     yield
     # Shutdown
     print(f"{settings.APP_NAME} shutting down...")

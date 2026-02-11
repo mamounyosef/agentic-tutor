@@ -5,13 +5,12 @@ which orchestrates the entire tutoring session workflow.
 """
 
 import logging
-from pathlib import Path
 from typing import Any, Dict, Optional
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 
-from app.core.config import get_settings
+from app.observability.langsmith import build_trace_config
 from .nodes import (
     explainer_node,
     gap_analysis_node,
@@ -21,7 +20,6 @@ from .nodes import (
     route_after_explainer,
     route_after_quiz,
     route_by_action,
-    should_continue,
     summarize_node,
     welcome_node,
 )
@@ -66,6 +64,7 @@ class TutorGraph:
         graph.add_node("quiz", quiz_node)
         graph.add_node("grade_quiz", grade_quiz_node)
         graph.add_node("summarize", summarize_node)
+        graph.add_node("end_turn", self._end_turn_node)
 
         # Set entry point
         graph.set_entry_point("welcome")
@@ -81,8 +80,9 @@ class TutorGraph:
                 "explainer": "explainer",
                 "gap_analysis": "gap_analysis",
                 "quiz": "quiz",
+                "grade_quiz": "grade_quiz",
                 "summarize": "summarize",
-                "respond": "intake",  # Loop back for next input
+                "end_turn": "end_turn",
             },
         )
 
@@ -104,7 +104,7 @@ class TutorGraph:
             "quiz",
             route_after_quiz,
             {
-                "grade": "grade_quiz",
+                "quiz": "quiz",
                 "intake": "intake",
             },
         )
@@ -119,20 +119,15 @@ class TutorGraph:
             },
         )
 
-        # From intake, check if session should end
-        graph.add_conditional_edges(
-            "intake",
-            should_continue,
-            {
-                "continue": "intake",
-                "end": "summarize",
-            },
-        )
-
         # Summarize ends the session
         graph.add_edge("summarize", END)
+        graph.add_edge("end_turn", END)
 
         return graph.compile(checkpointer=self.checkpointer)
+
+    async def _end_turn_node(self, state: TutorState) -> TutorState:
+        """Terminate execution for the current user turn without ending the session."""
+        return state
 
     async def invoke(
         self,
@@ -270,7 +265,16 @@ async def start_tutoring_session(
     graph = build_tutor_graph(session_id)
 
     # Initialize the session by invoking the welcome node
-    await graph.invoke(initial_state)
+    init_config = build_trace_config(
+        thread_id=session_id,
+        tags=["tutor", "session_start"],
+        metadata={
+            "session_id": session_id,
+            "student_id": student_id,
+            "course_id": course_id,
+        },
+    )
+    await graph.invoke(initial_state, config=init_config)
 
     return session_id, graph
 

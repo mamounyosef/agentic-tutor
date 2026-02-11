@@ -9,15 +9,14 @@ This manages ChromaDB collections for a student's personal data:
 - interactions: All student interactions for context
 """
 
-import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import chromadb
-from chromadb.config import Settings
+from chromadb.config import Settings as ChromaSettings
 from langchain_chroma import Chroma
 
-from ..core.config import Settings, get_settings
+from ..core.config import Settings as AppSettings, get_settings
 from .embeddings import get_embeddings
 
 
@@ -42,7 +41,7 @@ class StudentVectorStore:
     COLLECTION_FEEDBACK = "feedback"  # Student feelings about course
     COLLECTION_INTERACTIONS = "interactions"  # All interactions for context
 
-    def __init__(self, student_id: int, settings: Settings | None = None):
+    def __init__(self, student_id: int, settings: AppSettings | None = None):
         """
         Initialize the Student Vector Store.
 
@@ -68,7 +67,7 @@ class StudentVectorStore:
 
         return chromadb.PersistentClient(
             path=str(course_path),
-            settings=Settings(anonymized_telemetry=False)
+            settings=ChromaSettings(anonymized_telemetry=False),
         )
 
     def get_or_create_collection(
@@ -97,9 +96,38 @@ class StudentVectorStore:
         return Chroma(
             client=client,
             collection_name=collection_name,
-            embedding_function=embedding_service.embed_text,
+            embedding_function=embedding_service.embeddings,
             collection_metadata={"hnsw:space": "cosine"}
         )
+
+    @staticmethod
+    def _normalize_where(filter_metadata: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Normalize simple multi-field filters for Chroma's where syntax."""
+        if not filter_metadata:
+            return None
+        if len(filter_metadata) <= 1:
+            return filter_metadata
+        if any(str(k).startswith("$") for k in filter_metadata.keys()):
+            return filter_metadata
+        return {"$and": [{k: v} for k, v in filter_metadata.items()]}
+
+    @staticmethod
+    def _format_collection_rows(results: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Convert Chroma get()/peek() payloads into normalized rows."""
+        ids = results.get("ids", []) or []
+        docs = results.get("documents", []) or []
+        metadatas = results.get("metadatas", []) or []
+
+        formatted: List[Dict[str, Any]] = []
+        for i, doc_id in enumerate(ids):
+            metadata = metadatas[i] if i < len(metadatas) and metadatas[i] else {}
+            content = docs[i] if i < len(docs) and docs[i] is not None else ""
+            formatted.append({
+                "id": doc_id,
+                "content": content,
+                "metadata": metadata,
+            })
+        return formatted
 
     # ==================================================================
     # Q&A History Methods
@@ -150,8 +178,6 @@ class StudentVectorStore:
         k: int = 10
     ) -> List[Dict[str, Any]]:
         """Get recent Q&A history for a student in a course."""
-        vector_store = self.get_vector_store(student_id, course_id, self.COLLECTION_QNA_HISTORY)
-
         # Query by topic if specified
         filter_metadata = None
         if topic_id is not None:
@@ -159,23 +185,13 @@ class StudentVectorStore:
 
         # Get collection for raw querying
         collection = self.get_or_create_collection(student_id, course_id, self.COLLECTION_QNA_HISTORY)
-        embedding_service = get_embeddings()
 
         # Simple query (get recent interactions)
         results = collection.get(
             limit=k,
-            where=filter_metadata
+            where=self._normalize_where(filter_metadata),
         )
-
-        formatted = []
-        for doc in results:
-            formatted.append({
-                "id": doc.id,
-                "content": doc.metadata.get("page_content", ""),
-                "metadata": doc.metadata
-            })
-
-        return formatted
+        return self._format_collection_rows(results)
 
     # ==================================================================
     # Explanations Methods
@@ -218,23 +234,19 @@ class StudentVectorStore:
         k: int = 3
     ) -> List[Dict[str, Any]]:
         """Get previously given explanations for this topic."""
-        vector_store = self.get_vector_store(student_id, course_id, self.COLLECTION_EXPLANATIONS)
-
         collection = self.get_or_create_collection(student_id, course_id, self.COLLECTION_EXPLANATIONS)
-        embedding_service = get_embeddings()
 
         # Find similar explanations
         results = collection.peek(limit=k)
-
-        formatted = []
-        for doc in results:
-            formatted.append({
-                "id": doc.id,
-                "explanation": doc.metadata.get("page_content", ""),
-                "metadata": doc.metadata
-            })
-
-        return formatted
+        rows = self._format_collection_rows(results)
+        return [
+            {
+                "id": row["id"],
+                "explanation": row["content"],
+                "metadata": row["metadata"],
+            }
+            for row in rows
+        ]
 
     # ==================================================================
     # Misconceptions Methods
@@ -254,6 +266,7 @@ class StudentVectorStore:
         Increments frequency if this misconception has been seen before.
         """
         vector_store = self.get_vector_store(student_id, course_id, self.COLLECTION_MISCONCEPTIONS)
+        misconception_id = f"misc_{student_id}_{course_id}_{hash(misconception) % 10000:04d}"
 
         # Check if this misconception already exists
         existing = self.find_misconception(student_id, course_id, concept, misconception)
@@ -264,8 +277,6 @@ class StudentVectorStore:
             pass
         else:
             # Create new misconception record
-            misconception_id = f"misc_{student_id}_{course_id}_{hash(misconception) % 10000:04d}"
-
             metadata = {
                 "student_id": str(student_id),
                 "course_id": str(course_id),
@@ -296,15 +307,15 @@ class StudentVectorStore:
 
         # Simple check for existence
         results = collection.get(
-            where={
+            where=self._normalize_where({
                 "student_id": str(student_id),
                 "concept": concept,
                 "misconception": misconception
-            },
+            }),
             limit=1
         )
 
-        return len(results) > 0
+        return bool((results.get("ids", []) or []))
 
     async def get_student_misconceptions(
         self,
@@ -319,17 +330,8 @@ class StudentVectorStore:
         if topic_id is not None:
             filter_metadata["topic_id"] = str(topic_id)
 
-        results = collection.get(where=filter_metadata, limit=100)
-
-        formatted = []
-        for doc in results:
-            formatted.append({
-                "id": doc.id,
-                "content": doc.metadata.get("page_content", ""),
-                "metadata": doc.metadata
-            })
-
-        return formatted
+        results = collection.get(where=self._normalize_where(filter_metadata), limit=100)
+        return self._format_collection_rows(results)
 
     # ==================================================================
     # Learning Style Methods
@@ -368,18 +370,19 @@ class StudentVectorStore:
         collection = self.get_or_create_collection(student_id, course_id, self.COLLECTION_LEARNING_STYLE)
 
         results = collection.get(
-            where={
+            where=self._normalize_where({
                 "student_id": str(student_id),
                 "course_id": str(course_id)
-            },
+            }),
             limit=1
         )
 
-        if results:
-            doc = results[0]
+        rows = self._format_collection_rows(results)
+        if rows:
+            doc = rows[0]
             # Extract preferences from stored JSON
             import json
-            content = doc.metadata.get("page_content", "")
+            content = doc.get("content", "")
             if content.startswith("Learning preferences: "):
                 return json.loads(content.replace("Learning preferences: ", ""))
         return None
@@ -447,17 +450,8 @@ class StudentVectorStore:
             where["feedback_type"] = feedback_type
 
         try:
-            results = collection.get(where=where, limit=limit)
-
-            formatted = []
-            for doc in results:
-                formatted.append({
-                    "id": doc.id,
-                    "content": doc.metadata.get("page_content", ""),
-                    "metadata": doc.metadata
-                })
-
-            return formatted
+            results = collection.get(where=self._normalize_where(where), limit=limit)
+            return self._format_collection_rows(results)
         except Exception:
             return []
 
@@ -475,7 +469,7 @@ class StudentVectorStore:
 
         try:
             results = collection.get(
-                where={"student_id": str(student_id), "course_id": str(course_id)},
+                where=self._normalize_where({"student_id": str(student_id), "course_id": str(course_id)}),
                 limit=50
             )
 
@@ -484,11 +478,11 @@ class StudentVectorStore:
             neutral = 0
             concerns = []
 
-            for doc in results:
-                metadata = doc.metadata
+            for row in self._format_collection_rows(results):
+                metadata = row.get("metadata", {})
                 sentiment = metadata.get("sentiment", "neutral")
                 feedback_type = metadata.get("feedback_type", "")
-                content = doc.metadata.get("page_content", "")
+                content = row.get("content", "")
 
                 if sentiment == "positive":
                     positive += 1
@@ -598,17 +592,8 @@ class StudentVectorStore:
             where["interaction_type"] = interaction_type
 
         try:
-            results = collection.get(where=where, limit=limit)
-
-            formatted = []
-            for doc in results:
-                formatted.append({
-                    "id": doc.id,
-                    "content": doc.metadata.get("page_content", ""),
-                    "metadata": doc.metadata
-                })
-
-            return formatted
+            results = collection.get(where=self._normalize_where(where), limit=limit)
+            return self._format_collection_rows(results)
         except Exception:
             return []
 

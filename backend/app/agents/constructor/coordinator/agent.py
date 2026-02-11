@@ -5,15 +5,13 @@ which orchestrates the entire course construction workflow.
 """
 
 import logging
-from pathlib import Path
 from typing import Any, Dict, Optional
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 
-from app.core.config import get_settings
-from app.agents.constructor.orchestration import ConstructorOrchestrator, get_orchestrator
-from app.agents.constructor.state import ConstructorState, create_initial_constructor_state
+from app.agents.constructor.orchestration import get_orchestrator
+from app.agents.constructor.state import ConstructorState
 from .nodes import (
     dispatch_node,
     finalize_node,
@@ -64,6 +62,7 @@ class CoordinatorGraph:
         graph.add_node("dispatch", dispatch_node)
         graph.add_node("respond", respond_node)
         graph.add_node("finalize", finalize_node)
+        graph.add_node("end_turn", self._end_turn_node)
 
         # Sub-agent nodes (now with actual invocation)
         graph.add_node("ingestion", self._create_ingestion_node())
@@ -83,8 +82,7 @@ class CoordinatorGraph:
             "route_action",
             route_by_phase,
             {
-                "intake": "intake",
-                "respond": "respond",
+                "end_turn": "end_turn",
                 "dispatch": "dispatch",
                 "finalize": "finalize",
             },
@@ -114,14 +112,19 @@ class CoordinatorGraph:
             "respond",
             should_continue,
             {
-                "continue": "intake",
+                "continue": "end_turn",
                 "end": END,
             },
         )
 
         graph.add_edge("finalize", END)
+        graph.add_edge("end_turn", END)
 
         return graph.compile(checkpointer=self.checkpointer)
+
+    async def _end_turn_node(self, state: ConstructorState) -> ConstructorState:
+        """Terminate execution for the current user turn without ending the session."""
+        return state
 
     def _create_ingestion_node(self):
         """Create the ingestion sub-agent node."""
@@ -224,6 +227,27 @@ class CoordinatorGraph:
         if values is None:
             return None
         return values
+
+    def update_state(
+        self,
+        state_update: Dict[str, Any],
+        config: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """
+        Update the current state in the checkpointer.
+
+        Args:
+            state_update: Dictionary with partial state updates
+            config: Optional configuration
+        """
+        config = config or {"configurable": {"thread_id": self.session_id}}
+        try:
+            current_state = self.get_state(config)
+            if current_state:
+                updated_state = {**current_state, **state_update}
+                self.graph.update_state(config, updated_state)
+        except Exception as e:
+            logger.error(f"Error updating constructor state: {e}")
 
 
 def build_coordinator_graph(

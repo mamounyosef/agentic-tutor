@@ -10,7 +10,6 @@ These tools enable:
 import logging
 from typing import Any, Dict, List, Optional
 
-from langchain_core.tools import tool
 
 from app.vector.constructor_store import ConstructorVectorStore
 from app.vector.student_store import StudentVectorStore, get_student_store
@@ -22,7 +21,6 @@ logger = logging.getLogger(__name__)
 # Course Content Retrieval (Read-Only from Constructor's DB)
 # =============================================================================
 
-@tool
 async def retrieve_topic_content(
     student_id: int,
     course_id: int,
@@ -76,7 +74,6 @@ async def retrieve_topic_content(
         }
 
 
-@tool
 async def semantic_search_course(
     student_id: int,
     course_id: int,
@@ -130,7 +127,6 @@ async def semantic_search_course(
         }
 
 
-@tool
 async def get_topic_summary(
     student_id: int,
     course_id: int,
@@ -185,7 +181,6 @@ async def get_topic_summary(
 # Student Personalization Retrieval
 # =============================================================================
 
-@tool
 async def search_student_qna_history(
     student_id: int,
     course_id: int,
@@ -238,7 +233,6 @@ async def search_student_qna_history(
         }
 
 
-@tool
 async def get_relevant_explanations(
     student_id: int,
     course_id: int,
@@ -290,7 +284,6 @@ async def get_relevant_explanations(
         }
 
 
-@tool
 async def get_student_misconceptions(
     student_id: int,
     course_id: int,
@@ -342,7 +335,6 @@ async def get_student_misconceptions(
         }
 
 
-@tool
 async def get_student_context(
     student_id: int,
     course_id: int
@@ -368,19 +360,36 @@ async def get_student_context(
         student_store = get_student_store(student_id, course_id)
 
         # Get learning style
-        learning_style = await student_store.get_learning_style()
+        learning_style = await student_store.get_learning_style(
+            student_id=student_id,
+            course_id=course_id,
+        )
 
         # Get recent sentiment
-        sentiment_summary = await student_store.get_student_sentiment_summary()
+        sentiment_summary = await student_store.get_student_sentiment_summary(
+            student_id=student_id,
+            course_id=course_id,
+        )
 
         # Get recent feedback
-        recent_feedback = await student_store.get_recent_feedback(limit=5)
+        recent_feedback = await student_store.get_recent_feedback(
+            student_id=student_id,
+            course_id=course_id,
+            limit=5,
+        )
 
         # Get recent interactions
-        recent_interactions = await student_store.get_recent_interactions(limit=10)
+        recent_interactions = await student_store.get_recent_interactions(
+            student_id=student_id,
+            course_id=course_id,
+            limit=10,
+        )
 
         # Get misconceptions
-        misconceptions = await student_store.get_student_misconceptions()
+        misconceptions = await student_store.get_student_misconceptions(
+            student_id=student_id,
+            course_id=course_id,
+        )
 
         return {
             "success": True,
@@ -407,7 +416,6 @@ async def get_student_context(
 # Combined Retrieval (Course + Student)
 # =============================================================================
 
-@tool
 async def retrieve_for_explanation(
     student_id: int,
     course_id: int,

@@ -55,20 +55,16 @@ class ConstructorOrchestrator:
         """
         logger.info(f"Invoking Ingestion Agent for session {self.session_id}")
 
-        # Prepare ingestion state from constructor state
-        from .ingestion.state import IngestionState
-
-        ingestion_state = IngestionState(
-            course_id=state.get("course_id") or state.get("session_id"),
-            uploaded_files=state.get("uploaded_files", []),
-            processed_files=state.get("processed_files", []),
-            extracted_contents=[],
-            chunks_created=[],
-            metadata_extracted={},
-            errors=[],
-            subagent_results=state.get("subagent_results", {}),
-            content_chunks=state.get("content_chunks", []),
-        )
+        # The ingestion graph is built on ConstructorState, not a separate
+        # ingestion-specific state module.
+        ingestion_state = {
+            **state,
+            "uploaded_files": state.get("uploaded_files", []),
+            "processed_files": state.get("processed_files", []),
+            "content_chunks": state.get("content_chunks", []),
+            "subagent_results": state.get("subagent_results", {}),
+            "errors": state.get("errors", []),
+        }
 
         # Run ingestion graph
         result = await self.ingestion_graph.invoke(ingestion_state)
@@ -229,15 +225,20 @@ class ConstructorOrchestrator:
 
         # Build prerequisite map from topics
         prerequisite_map = {}
+        topics_by_id = {
+            t.get("id"): t.get("title", "")
+            for t in state.get("topics", [])
+            if t.get("id") is not None
+        }
         for t in state.get("topics", []):
             topic_title = t.get("title", "")
             prereqs = t.get("prerequisites", [])
             if prereqs:
-                # Convert prereq IDs to titles (simplified)
+                # Convert prerequisite topic IDs to titles.
                 prerequisite_map[topic_title] = [
-                    state.get("topics", [{}])[i].get("title", "")
-                    for i in prereqs
-                    if i < len(state.get("topics", []))
+                    topics_by_id[prereq_id]
+                    for prereq_id in prereqs
+                    if prereq_id in topics_by_id
                 ]
 
         validation_state = create_initial_validation_state(

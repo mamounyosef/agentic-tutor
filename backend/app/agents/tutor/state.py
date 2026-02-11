@@ -123,6 +123,9 @@ class TutorState(TypedDict):
     quiz_score: float
     quiz_start_time: Optional[str]
     quiz_completed: bool
+    awaiting_quiz_answer: bool
+    last_answer_correct: Optional[bool]
+    last_feedback: Optional[str]
 
     # Explanation state
     explanation_given: Optional[str]
@@ -188,6 +191,9 @@ def create_initial_tutor_state(
         quiz_score=0.0,
         quiz_start_time=None,
         quiz_completed=False,
+        awaiting_quiz_answer=False,
+        last_answer_correct=None,
+        last_feedback=None,
         explanation_given=None,
         examples_used=[],
         current_content_position=None,

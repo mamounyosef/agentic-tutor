@@ -11,7 +11,6 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from langchain_core.tools import tool
 
 from app.vector.student_store import get_student_store
 
@@ -22,7 +21,6 @@ logger = logging.getLogger(__name__)
 # Mastery Retrieval
 # =============================================================================
 
-@tool
 async def get_mastery_snapshot(
     student_id: int,
     course_id: int
@@ -67,7 +65,6 @@ async def get_mastery_snapshot(
         }
 
 
-@tool
 async def get_topic_mastery(
     student_id: int,
     course_id: int,
@@ -115,7 +112,6 @@ async def get_topic_mastery(
 # Mastery Update
 # =============================================================================
 
-@tool
 async def update_mastery_score(
     student_id: int,
     course_id: int,
@@ -202,7 +198,6 @@ async def update_mastery_score(
         }
 
 
-@tool
 async def record_quiz_attempt(
     student_id: int,
     course_id: int,
@@ -282,7 +277,6 @@ async def record_quiz_attempt(
 # Mastery Analysis
 # =============================================================================
 
-@tool
 async def identify_weak_topics(
     student_id: int,
     course_id: int,
@@ -335,7 +329,6 @@ async def identify_weak_topics(
         }
 
 
-@tool
 async def check_spaced_repetition(
     student_id: int,
     course_id: int,
@@ -386,7 +379,6 @@ async def check_spaced_repetition(
         }
 
 
-@tool
 async def get_mastery_trend(
     student_id: int,
     course_id: int,

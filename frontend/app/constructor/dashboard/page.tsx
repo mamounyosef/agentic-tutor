@@ -61,8 +61,12 @@ export default function ConstructorDashboard() {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const wsRef = useRef<WebSocket | null>(null)
+  const initializedRef = useRef(false)
 
   useEffect(() => {
+    if (initializedRef.current) return
+    initializedRef.current = true
+
     if (!creatorToken) {
       router.push("/auth/login")
       return
@@ -117,8 +121,24 @@ export default function ConstructorDashboard() {
       const data = JSON.parse(event.data)
 
       if (data.type === "token") {
+        const isFirst = Boolean(data.metadata?.is_first)
+        const isLast = Boolean(data.metadata?.is_last)
+
         // Streaming token
         setMessages((prev) => {
+          if (isFirst) {
+            return [
+              ...prev,
+              {
+                id: Date.now().toString(),
+                role: "assistant",
+                content: data.content,
+                timestamp: new Date(),
+                isStreaming: !isLast,
+              },
+            ]
+          }
+
           const lastMessage = prev[prev.length - 1]
           if (lastMessage?.role === "assistant" && lastMessage.isStreaming) {
             return [
@@ -126,9 +146,11 @@ export default function ConstructorDashboard() {
               {
                 ...lastMessage,
                 content: lastMessage.content + data.content,
+                isStreaming: !isLast,
               },
             ]
           }
+
           return [
             ...prev,
             {
@@ -136,7 +158,7 @@ export default function ConstructorDashboard() {
               role: "assistant",
               content: data.content,
               timestamp: new Date(),
-              isStreaming: true,
+              isStreaming: !isLast,
             },
           ]
         })

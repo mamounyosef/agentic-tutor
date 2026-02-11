@@ -55,7 +55,7 @@ Validation Passed: {validation_passed}
 
 Return a JSON object with:
 {{
-  "action": "one of: collect_info, request_files, process_files, analyze_structure, generate_quizzes, validate_course, finalize, respond",
+  "action": "collect_info | request_files | process_files | analyze_structure | generate_quizzes | validate_course | finalize | respond",
   "reason": "brief explanation of why this action"
 }}
 

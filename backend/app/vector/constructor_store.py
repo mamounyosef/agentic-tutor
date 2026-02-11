@@ -12,11 +12,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import chromadb
-from chromadb.config import Settings
+from chromadb.config import Settings as ChromaSettings
 from langchain_chroma import Chroma
 from langchain_community.vectorstores import Chroma as LangChainChroma
 
-from ..core.config import Settings, get_settings
+from ..core.config import Settings as AppSettings, get_settings
 from .embeddings import get_embeddings
 
 
@@ -34,7 +34,7 @@ class ConstructorVectorStore:
     COLLECTION_QUESTIONS = "quiz_questions"
     COLLECTION_STRUCTURE = "structure"
 
-    def __init__(self, course_id: int, settings: Settings | None = None):
+    def __init__(self, course_id: int, settings: AppSettings | None = None):
         """
         Initialize the Constructor Vector Store for a specific course.
 
@@ -56,7 +56,7 @@ class ConstructorVectorStore:
         # Initialize ChromaDB client for this course
         self.client = chromadb.PersistentClient(
             path=str(self.persist_dir),
-            settings=Settings(anonymized_telemetry=False)
+            settings=ChromaSettings(anonymized_telemetry=False),
         )
 
         # Initialize LangChain wrapper
@@ -87,7 +87,7 @@ class ConstructorVectorStore:
         # Get embeddings from our service
         if embedding_function is None:
             embedding_service = get_embeddings()
-            embedding_function = embedding_service.embed_text
+            embedding_function = embedding_service.embeddings
 
         return LangChainChroma(
             client=self.client,
@@ -243,22 +243,33 @@ class ConstructorVectorStore:
         query_embedding = embedding_service.embed_text(query)
 
         # Search
+        where_clause = filter_metadata
+        if isinstance(filter_metadata, dict) and len(filter_metadata) > 1:
+            has_operator = any(str(k).startswith("$") for k in filter_metadata.keys())
+            if not has_operator:
+                where_clause = {"$and": [{k: v} for k, v in filter_metadata.items()]}
+
         results = collection.query(
             query_embeddings=[query_embedding],
             n_results=k,
-            where=filter_metadata
+            where=where_clause,
         )
 
         # Format results
         formatted_results = []
-        for i, (doc, distance) in enumerate(zip(
-            results['documents'][0],
-            results['distances'][0]
-        )):
+        documents = results.get("documents", [[]])[0]
+        metadatas = results.get("metadatas", [[]])[0]
+        ids = results.get("ids", [[]])[0]
+        distances = results.get("distances", [[]])[0]
+
+        for i, doc in enumerate(documents):
+            metadata = metadatas[i] if i < len(metadatas) and metadatas[i] else {}
+            distance = distances[i] if i < len(distances) else None
+            doc_id = ids[i] if i < len(ids) else f"doc_{i}"
             formatted_results.append({
-                "id": doc.id,
-                "content": doc.metadata.get("page_content", ""),
-                "metadata": doc.metadata,
+                "id": doc_id,
+                "content": doc or "",
+                "metadata": metadata,
                 "distance": distance
             })
 

@@ -12,14 +12,14 @@ from sqlalchemy import select, func
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel
 
-from langchain_core.messages import HumanMessage
-
+from app.agents.base.message_utils import append_user_message, latest_assistant_content
 from app.core.config import Settings, get_settings
 from app.db.constructor.models import Course, Unit, Topic
 from app.db.tutor.models import Student, Enrollment, Mastery, TutorSession
 from app.db.base import get_constructor_session, get_tutor_session
 from app.api.auth import get_current_student
 from app.api.websocket import manager
+from app.observability.langsmith import build_trace_config
 
 # Import Tutor agents
 from app.agents.tutor.graph import (
@@ -135,6 +135,7 @@ async def tutor_websocket(
 
     This provides real-time, token-by-token streaming of agent responses.
     """
+    settings = get_settings()
     await manager.connect(session_id, websocket)
     logger.info(f"Tutor WebSocket connected for session: {session_id}")
 
@@ -184,7 +185,7 @@ async def tutor_websocket(
 
                 # Add user message to state
                 messages = current_state.get("messages", [])
-                messages.append(HumanMessage(content=user_message))
+                messages = append_user_message(messages, user_message)
 
                 # Stream the graph execution
                 try:
@@ -194,28 +195,38 @@ async def tutor_websocket(
                         phase="processing",
                     )
 
+                    trace_config = build_trace_config(
+                        thread_id=session_id,
+                        tags=["tutor", "websocket"],
+                        metadata={
+                            "endpoint": "/api/v1/tutor/session/ws/{session_id}",
+                            "session_id": session_id,
+                            "student_id": student_id,
+                            "course_id": course_id,
+                        },
+                    )
+
                     async for event in graph.stream(
                         {**current_state, "messages": messages},
+                        config=trace_config,
                     ):
                         # Stream events to client
                         for node_name, node_output in event.items():
                             if node_output and isinstance(node_output, dict):
                                 # Extract and send any AI messages
                                 node_messages = node_output.get("messages", [])
-                                for msg in node_messages:
-                                    if hasattr(msg, "type") and msg.type == "ai":
-                                        content = msg.content
-                                        if content:
-                                            # Stream token by token (chunked)
-                                            chunk_size = 10
-                                            for i in range(0, len(content), chunk_size):
-                                                chunk = content[i:i + chunk_size]
-                                                await manager.send_token(
-                                                    session_id,
-                                                    chunk,
-                                                    is_first=(i == 0),
-                                                    is_last=(i + chunk_size >= len(content)),
-                                                )
+                                content = latest_assistant_content(node_messages)
+                                if content:
+                                    # Stream token by token (chunked)
+                                    chunk_size = 10
+                                    for i in range(0, len(content), chunk_size):
+                                        chunk = content[i:i + chunk_size]
+                                        await manager.send_token(
+                                            session_id,
+                                            chunk,
+                                            is_first=(i == 0),
+                                            is_last=(i + chunk_size >= len(content)),
+                                        )
 
                                 # Send status updates
                                 current_topic = node_output.get("current_topic")
@@ -293,15 +304,14 @@ async def tutor_websocket(
                 # Get the welcome message from state
                 state = graph.get_state()
                 if state and state.get("messages"):
-                    for msg in state.get("messages", []):
-                        if hasattr(msg, "type") and msg.type == "ai":
-                            await manager.send_token(
-                                session_id,
-                                msg.content,
-                                is_first=True,
-                                is_last=True,
-                            )
-                            break
+                    welcome = latest_assistant_content(state.get("messages", []))
+                    if welcome:
+                        await manager.send_token(
+                            session_id,
+                            welcome,
+                            is_first=True,
+                            is_last=True,
+                        )
 
                 # Send mastery snapshot
                 mastery_snapshot = state.get("mastery_snapshot", {})
@@ -326,14 +336,22 @@ async def tutor_websocket(
                 # Get current state and add quiz answer
                 current_state = graph.get_state()
                 if current_state:
-                    updated_state = {
-                        **current_state,
-                        "quiz_answer": answer,
-                        "current_question_id": question_id,
-                    }
+                    messages = append_user_message(current_state.get("messages", []), str(answer or ""))
+                    updated_state = {**current_state, "messages": messages}
 
                     # Invoke graph to grade
-                    result = await graph.invoke(updated_state)
+                    trace_config = build_trace_config(
+                        thread_id=session_id,
+                        tags=["tutor", "websocket", "quiz"],
+                        metadata={
+                            "endpoint": "/api/v1/tutor/session/ws/{session_id}",
+                            "session_id": session_id,
+                            "question_id": question_id,
+                        },
+                    )
+                    result = await graph.invoke(updated_state, config=trace_config)
+
+                    feedback = result.get("last_feedback") or latest_assistant_content(result.get("messages", [])) or ""
 
                     # Send grading result
                     await manager.broadcast_to_session(
@@ -341,7 +359,7 @@ async def tutor_websocket(
                         {
                             "type": "quiz_result",
                             "is_correct": result.get("last_answer_correct", False),
-                            "feedback": result.get("last_feedback", ""),
+                            "feedback": feedback,
                             "mastery_updated": result.get("mastery_updated", False),
                         },
                     )
@@ -562,11 +580,7 @@ async def start_tutor_session_endpoint(
 
     if state:
         mastery_snapshot = state.get("mastery_snapshot", {})
-        messages = state.get("messages", [])
-        for msg in messages:
-            if hasattr(msg, "type") and msg.type == "ai":
-                welcome_message = msg.content
-                break
+        welcome_message = latest_assistant_content(state.get("messages", [])) or welcome_message
 
     return {
         "session_id": session_id,
@@ -610,23 +624,28 @@ async def tutor_chat(
 
         # Add user message
         messages = current_state.get("messages", [])
-        messages.append(HumanMessage(content=request.message))
+        messages = append_user_message(messages, request.message)
 
         # Invoke graph
-        result = await graph.invoke({**current_state, "messages": messages})
+        trace_config = build_trace_config(
+            thread_id=session_id,
+            tags=["tutor", "rest"],
+            metadata={
+                "endpoint": "/api/v1/tutor/session/chat",
+                "session_id": session_id,
+                "student_id": current_student.id,
+                "course_id": current_state.get("course_id"),
+            },
+        )
+        result = await graph.invoke({**current_state, "messages": messages}, config=trace_config)
 
         # Extract AI response
-        response = "I understand. Let me help you with that."
-        messages = result.get("messages", [])
-        for msg in messages:
-            if hasattr(msg, "type") and msg.type == "ai":
-                response = msg.content
-                break
+        response = latest_assistant_content(result.get("messages", [])) or "I understand. Let me help you with that."
 
         return {
             "session_id": session_id,
             "response": response,
-            "action_taken": result.get("next_action", "respond"),
+            "action_taken": result.get("next_action", "intake"),
             "current_topic": result.get("current_topic"),
             "mastery_updated": result.get("mastery_updated", False),
         }

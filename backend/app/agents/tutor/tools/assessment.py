@@ -10,7 +10,6 @@ These tools enable:
 import logging
 from typing import Any, Dict, List, Optional
 
-from langchain_core.tools import tool
 
 from app.agents.base.llm import get_llm
 from app.vector.constructor_store import ConstructorVectorStore
@@ -23,7 +22,6 @@ logger = logging.getLogger(__name__)
 # Quiz Question Retrieval
 # =============================================================================
 
-@tool
 async def get_quiz_question(
     student_id: int,
     course_id: int,
@@ -96,7 +94,6 @@ async def get_quiz_question(
         }
 
 
-@tool
 async def get_quiz_questions_batch(
     student_id: int,
     course_id: int,
@@ -159,7 +156,6 @@ async def get_quiz_questions_batch(
 # Answer Grading
 # =============================================================================
 
-@tool
 async def grade_multiple_choice(
     student_id: int,
     course_id: int,
@@ -211,7 +207,6 @@ async def grade_multiple_choice(
         }
 
 
-@tool
 async def grade_with_rubric(
     student_id: int,
     course_id: int,
@@ -343,7 +338,6 @@ Respond in JSON format:
         }
 
 
-@tool
 async def grade_answer(
     student_id: int,
     course_id: int,
@@ -397,7 +391,6 @@ async def grade_answer(
 # Feedback Generation
 # =============================================================================
 
-@tool
 async def generate_feedback(
     student_id: int,
     course_id: int,
@@ -496,7 +489,6 @@ Keep it to 2-3 sentences max.
         }
 
 
-@tool
 async def identify_misconception_from_answer(
     student_id: int,
     course_id: int,

@@ -5,12 +5,18 @@ modes (explainer, gap_analysis, quiz) based on student state.
 """
 
 import logging
+import inspect
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from app.agents.base.llm import get_llm
+from app.agents.base.message_utils import (
+    make_assistant_message,
+    message_content,
+    message_role,
+)
 from app.vector.constructor_store import ConstructorVectorStore
 from app.vector.student_store import get_student_store
 from app.agents.tutor.tools.assessment import (
@@ -59,6 +65,17 @@ from .state import TutorState, create_initial_tutor_state
 logger = logging.getLogger(__name__)
 
 
+async def _call_tool(tool_or_fn: Any, **kwargs: Any) -> Any:
+    """Invoke either a LangChain tool or a plain async/sync callable."""
+    if hasattr(tool_or_fn, "ainvoke"):
+        return await tool_or_fn.ainvoke(kwargs)
+
+    result = tool_or_fn(**kwargs)
+    if inspect.isawaitable(result):
+        return await result
+    return result
+
+
 # =============================================================================
 # WELCOME NODES
 # =============================================================================
@@ -69,6 +86,13 @@ async def welcome_node(state: TutorState) -> Dict[str, Any]:
 
     Loads mastery snapshot, student context, and generates a personalized welcome.
     """
+    if state.get("messages") and state.get("current_mode") != "welcome":
+        # Entry-point node runs for every invoke; only initialize once per session.
+        return {
+            **state,
+            "last_activity_at": datetime.utcnow().isoformat(),
+        }
+
     logger.info(f"Welcome node for session {state['session_id']}")
 
     student_id = state["student_id"]
@@ -76,7 +100,8 @@ async def welcome_node(state: TutorState) -> Dict[str, Any]:
     session_id = state["session_id"]
 
     # Start the session
-    await start_tutor_session(
+    await _call_tool(
+        start_tutor_session,
         student_id=student_id,
         course_id=course_id,
         goal=state.get("session_goal"),
@@ -84,7 +109,8 @@ async def welcome_node(state: TutorState) -> Dict[str, Any]:
     )
 
     # Load mastery snapshot
-    mastery_result = await get_mastery_snapshot(
+    mastery_result = await _call_tool(
+        get_mastery_snapshot,
         student_id=student_id,
         course_id=course_id,
     )
@@ -93,7 +119,8 @@ async def welcome_node(state: TutorState) -> Dict[str, Any]:
     weak_topics = [int(tid) for tid, score in mastery_snapshot.items() if score < 0.5]
 
     # Get spaced repetition topics
-    spaced_result = await check_spaced_repetition(
+    spaced_result = await _call_tool(
+        check_spaced_repetition,
         student_id=student_id,
         course_id=course_id,
         days_threshold=7,
@@ -101,7 +128,8 @@ async def welcome_node(state: TutorState) -> Dict[str, Any]:
     topics_due_for_review = spaced_result.get("topics_due_for_review", [])
 
     # Get student context
-    context_result = await get_student_context(
+    context_result = await _call_tool(
+        get_student_context,
         student_id=student_id,
         course_id=course_id,
     )
@@ -160,11 +188,34 @@ async def intake_node(state: TutorState) -> Dict[str, Any]:
             "action_rationale": "No messages, asking for session goal",
         }
 
-    last_message = messages[-1]
-    content = last_message.get("content", "")
+    content = _latest_user_message_content(messages)
+    if not content:
+        return {
+            **state,
+            "next_action": "ask_goal",
+            "action_rationale": "No user input available yet, waiting for learner message",
+        }
+
+    content_lower = content.lower()
+
+    if "bye" in content_lower or "done" in content_lower or "finish" in content_lower:
+        return {
+            **state,
+            "should_end": True,
+            "end_reason": "Student requested to end session",
+            "next_action": "summarize",
+        }
+
+    if state.get("awaiting_quiz_answer") and state.get("current_quiz"):
+        return {
+            **state,
+            "next_action": "quiz_answer",
+            "action_rationale": "Student provided an answer while a quiz is active",
+        }
 
     # Log the interaction
-    await log_interaction(
+    await _call_tool(
+        log_interaction,
         session_id=state["session_id"],
         student_id=state["student_id"],
         course_id=state["course_id"],
@@ -174,8 +225,6 @@ async def intake_node(state: TutorState) -> Dict[str, Any]:
     )
 
     # Check for explicit requests
-    content_lower = content.lower()
-
     if "quiz" in content_lower or "test" in content_lower:
         return {
             **state,
@@ -202,14 +251,6 @@ async def intake_node(state: TutorState) -> Dict[str, Any]:
             **state,
             "next_action": "gap_analysis",
             "action_rationale": "Student wants to address gaps",
-        }
-
-    if "bye" in content_lower or "done" in content_lower or "finish" in content_lower:
-        return {
-            **state,
-            "should_end": True,
-            "end_reason": "Student requested to end session",
-            "next_action": "summarize",
         }
 
     # Use LLM to decide next action based on context
@@ -288,8 +329,21 @@ def _calculate_time_elapsed(state: TutorState) -> int:
         return 0
 
 
+def _latest_user_message_content(messages: List[Any]) -> str:
+    """Get current-turn user input if the latest message is authored by the user."""
+    if not messages:
+        return ""
+    latest = messages[-1]
+    if message_role(latest) == "user":
+        return message_content(latest).strip()
+    return ""
+
+
 def route_by_action(state: TutorState) -> str:
     """Route to the appropriate mode based on next_action."""
+    if should_continue(state) == "end":
+        return "summarize"
+
     action = state.get("next_action", "teach")
 
     action_mapping = {
@@ -298,8 +352,9 @@ def route_by_action(state: TutorState) -> str:
         "clarify": "explainer",
         "gap_analysis": "gap_analysis",
         "quiz": "quiz",
+        "quiz_answer": "grade_quiz",
         "summarize": "summarize",
-        "ask_goal": "respond",
+        "ask_goal": "end_turn",
     }
 
     return action_mapping.get(action, "explainer")
@@ -351,11 +406,12 @@ async def explainer_node(state: TutorState) -> Dict[str, Any]:
         }
 
     # Get retrieval context for explanation
-    retrieval_result = await retrieve_for_explanation(
+    retrieval_result = await _call_tool(
+        retrieve_for_explanation,
         student_id=student_id,
         course_id=course_id,
         topic_id=topic_to_explain["id"],
-        student_query=state.get("messages", [])[-1].get("content", "") if state.get("messages") else "",
+        student_query=_latest_user_message_content(state.get("messages", [])),
         include_student_context=True,
     )
 
@@ -364,7 +420,8 @@ async def explainer_node(state: TutorState) -> Dict[str, Any]:
     sentiment_summary = student_context.get("sentiment", {"overall_sentiment": "neutral"})
 
     # Get topic mastery
-    mastery_result = await get_topic_mastery(
+    mastery_result = await _call_tool(
+        get_topic_mastery,
         student_id=student_id,
         course_id=course_id,
         topic_id=topic_to_explain["id"],
@@ -385,7 +442,7 @@ async def explainer_node(state: TutorState) -> Dict[str, Any]:
         prompt = EXPLAINER_CLARIFY_TEMPLATE.format(
             student_name=f"Student {student_id}",
             topic_title=topic_to_explain.get("title", "this topic"),
-            student_question=state.get("messages", [])[-1].get("content", "") if state.get("messages") else "",
+            student_question=_latest_user_message_content(state.get("messages", [])),
             identified_confusion="the main concept",
             current_mastery=int(current_mastery * 100),
         )
@@ -443,7 +500,8 @@ async def _select_topic_for_explanation(state: TutorState) -> Optional[Dict[str,
     if action == "review" and state.get("topics_due_for_review"):
         # Get first topic due for review
         topic_id = state["topics_due_for_review"][0]
-        result = await get_topic_summary(
+        result = await _call_tool(
+            get_topic_summary,
             student_id=state["student_id"],
             course_id=course_id,
             topic_id=topic_id,
@@ -458,7 +516,8 @@ async def _select_topic_for_explanation(state: TutorState) -> Optional[Dict[str,
     elif state.get("weak_topics"):
         # Get first weak topic
         topic_id = state["weak_topics"][0]
-        result = await get_topic_summary(
+        result = await _call_tool(
+            get_topic_summary,
             student_id=state["student_id"],
             course_id=course_id,
             topic_id=topic_id,
@@ -506,7 +565,8 @@ async def gap_analysis_node(state: TutorState) -> Dict[str, Any]:
     course_id = state["course_id"]
 
     # Identify weak topics
-    weak_result = await identify_weak_topics(
+    weak_result = await _call_tool(
+        identify_weak_topics,
         student_id=student_id,
         course_id=course_id,
         threshold=0.5,
@@ -524,7 +584,8 @@ async def gap_analysis_node(state: TutorState) -> Dict[str, Any]:
         mastery = weak_topic.get("mastery", 0.0)
 
         # Get topic info
-        result = await get_topic_summary(
+        result = await _call_tool(
+            get_topic_summary,
             student_id=student_id,
             course_id=course_id,
             topic_id=topic_id,
@@ -582,19 +643,22 @@ async def quiz_node(state: TutorState) -> Dict[str, Any]:
     student_id = state["student_id"]
     course_id = state["course_id"]
 
+    working_state = state
+
     # If no active quiz, start one
-    if not state.get("current_quiz"):
+    if not working_state.get("current_quiz"):
         # Select topics to quiz based on weak areas or current topic
-        topic_ids = state.get("weak_topics", [])
-        if not topic_ids and state.get("current_topic"):
-            topic_ids = [state["current_topic"]["id"]]
+        topic_ids = working_state.get("weak_topics", [])
+        if not topic_ids and working_state.get("current_topic"):
+            topic_ids = [working_state["current_topic"]["id"]]
 
         if not topic_ids:
             # Get first topic from course
             topic_ids = [1]  # Default to topic 1
 
         # Get quiz questions
-        quiz_result = await get_quiz_questions_batch(
+        quiz_result = await _call_tool(
+            get_quiz_questions_batch,
             student_id=student_id,
             course_id=course_id,
             topic_ids=topic_ids,
@@ -608,16 +672,15 @@ async def quiz_node(state: TutorState) -> Dict[str, Any]:
 
         if not all_questions:
             return {
-                **state,
-                "messages": state["messages"] + [{
-                    "role": "assistant",
-                    "content": "I don't have any quiz questions ready for this topic yet. Let's continue learning!",
-                }],
+                **working_state,
+                "messages": working_state["messages"] + [
+                    make_assistant_message("I don't have any quiz questions ready for this topic yet. Let's continue learning!")
+                ],
                 "next_action": "teach",
             }
 
-        return {
-            **state,
+        working_state = {
+            **working_state,
             "current_quiz": {
                 "questions": all_questions,
                 "total": len(all_questions),
@@ -626,23 +689,24 @@ async def quiz_node(state: TutorState) -> Dict[str, Any]:
             "quiz_score": 0.0,
             "quiz_start_time": datetime.utcnow().isoformat(),
             "quiz_completed": False,
+            "awaiting_quiz_answer": False,
         }
 
     # Check if quiz is complete
-    current_quiz = state["current_quiz"]
-    position = state.get("quiz_position", 0)
+    current_quiz = working_state["current_quiz"]
+    position = working_state.get("quiz_position", 0)
     total = current_quiz.get("total", 1)
 
     if position >= total:
         # Quiz complete, show results
-        return await _finalize_quiz(state)
+        return await _finalize_quiz(working_state)
 
     # Get current question
     questions = current_quiz.get("questions", [])
     current_question = questions[position] if position < len(questions) else None
 
     if not current_question:
-        return await _finalize_quiz(state)
+        return await _finalize_quiz(working_state)
 
     # Present the question
     question_text = current_question.get("question_text", "")
@@ -669,12 +733,10 @@ Please enter your answer (A, B, C, or D)."""
 Please enter your answer."""
 
     return {
-        **state,
-        "messages": state["messages"] + [{
-            "role": "assistant",
-            "content": message,
-        }],
+        **working_state,
+        "messages": working_state["messages"] + [make_assistant_message(message)],
         "current_mode": "quiz",
+        "awaiting_quiz_answer": True,
     }
 
 
@@ -686,13 +748,19 @@ async def grade_quiz_node(state: TutorState) -> Dict[str, Any]:
     """
     logger.info(f"Grade quiz node for session {state['session_id']}")
 
+    if not state.get("current_quiz"):
+        return state
+    if not state.get("awaiting_quiz_answer", False):
+        return state
+
     # Get student's answer from last message
     messages = state.get("messages", [])
     if not messages:
         return state
 
-    last_message = messages[-1]
-    student_answer = last_message.get("content", "").strip()
+    student_answer = _latest_user_message_content(messages)
+    if not student_answer:
+        return state
 
     # Get current question
     current_quiz = state.get("current_quiz", {})
@@ -705,7 +773,8 @@ async def grade_quiz_node(state: TutorState) -> Dict[str, Any]:
     current_question = questions[position]
 
     # Grade the answer (hard-coded)
-    grade_result = await grade_answer(
+    grade_result = await _call_tool(
+        grade_answer,
         student_id=state["student_id"],
         course_id=state["course_id"],
         topic_id=current_question.get("topic_id", 1),
@@ -742,11 +811,11 @@ async def grade_quiz_node(state: TutorState) -> Dict[str, Any]:
         **state,
         "quiz_position": new_position,
         "quiz_score": new_score,
-        "messages": state["messages"] + [{
-            "role": "assistant",
-            "content": feedback,
-        }],
+        "messages": state["messages"] + [make_assistant_message(feedback)],
         "interactions_count": state.get("interactions_count", 0) + 1,
+        "awaiting_quiz_answer": False,
+        "last_answer_correct": is_correct,
+        "last_feedback": feedback,
     }
 
 
@@ -803,13 +872,11 @@ Would you like to:
 
     return {
         **state,
-        "messages": state["messages"] + [{
-            "role": "assistant",
-            "content": message,
-        }],
+        "messages": state["messages"] + [make_assistant_message(message)],
         "quiz_completed": True,
         "current_quiz": None,
-        "current_mode": "respond",
+        "current_mode": "intake",
+        "awaiting_quiz_answer": False,
         "last_activity_at": datetime.utcnow().isoformat(),
     }
 
@@ -827,7 +894,8 @@ async def summarize_node(state: TutorState) -> Dict[str, Any]:
     logger.info(f"Summarize node for session {state['session_id']}")
 
     # Generate session summary
-    summary_result = await generate_session_summary(
+    summary_result = await _call_tool(
+        generate_session_summary,
         session_id=state["session_id"],
         student_id=state["student_id"],
         course_id=state["course_id"],
@@ -865,7 +933,8 @@ Recommended next steps:
     summary += f"\nGreat work today! Come back soon to continue learning. 🎓"
 
     # End the session
-    await end_tutor_session(
+    await _call_tool(
+        end_tutor_session,
         session_id=state["session_id"],
         student_id=state["student_id"],
         course_id=state["course_id"],
@@ -893,16 +962,19 @@ Recommended next steps:
 def route_after_explainer(state: TutorState) -> str:
     """Decide what to do after an explanation."""
     # Check if we should quiz or continue teaching
-    if state.get("interactions_count", 0) % 3 == 0:  # Every 3 interactions, suggest quiz
+    interactions = state.get("interactions_count", 0)
+    if interactions > 0 and interactions % 3 == 0:  # Every 3 interactions, suggest quiz
         return "quiz"
     return "intake"
 
 
 def route_after_quiz(state: TutorState) -> str:
     """Decide what to do after quiz."""
-    if state.get("quiz_completed", False):
+    if state.get("quiz_completed", False) or not state.get("current_quiz"):
         return "intake"
-    return "grade"
+    if state.get("awaiting_quiz_answer", False):
+        return "intake"
+    return "quiz"
 
 
 async def _get_course_info(course_store: ConstructorVectorStore, course_id: int) -> Dict[str, Any]:

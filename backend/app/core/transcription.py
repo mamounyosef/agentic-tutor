@@ -37,7 +37,13 @@ class TranscriptionService:
     def __init__(self):
         self.service = settings.TRANSCRIPTION_SERVICE
         self.api_key = settings.TRANSCRIPTION_API_KEY
-        self.model = settings.TRANSCRIPTION_MODEL
+        # Backward compatible with older envs that used TRANSCRIPTION_MODEL.
+        # Current config uses TRANSCRIPTION_OPENAI_MODEL for OpenAI fallback.
+        self.model = getattr(
+            settings,
+            "TRANSCRIPTION_MODEL",
+            getattr(settings, "TRANSCRIPTION_OPENAI_MODEL", "whisper-1"),
+        )
         self.language = settings.TRANSCRIPTION_LANGUAGE
 
         # Model options for faster-whisper:

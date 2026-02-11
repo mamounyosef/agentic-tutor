@@ -68,8 +68,12 @@ export default function StudentLearnPage({ params }: { params: { courseId: strin
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const wsRef = useRef<WebSocket | null>(null)
+  const initializedRef = useRef(false)
 
   useEffect(() => {
+    if (initializedRef.current) return
+    initializedRef.current = true
+
     if (!studentToken) {
       router.push("/auth/login")
       return
@@ -142,8 +146,24 @@ export default function StudentLearnPage({ params }: { params: { courseId: strin
       const data = JSON.parse(event.data)
 
       if (data.type === "token") {
+        const isFirst = Boolean(data.metadata?.is_first)
+        const isLast = Boolean(data.metadata?.is_last)
+
         // Streaming token
         setMessages((prev) => {
+          if (isFirst) {
+            return [
+              ...prev,
+              {
+                id: Date.now().toString(),
+                role: "assistant",
+                content: data.content,
+                timestamp: new Date(),
+                isStreaming: !isLast,
+              },
+            ]
+          }
+
           const lastMessage = prev[prev.length - 1]
           if (lastMessage?.role === "assistant" && lastMessage.isStreaming) {
             return [
@@ -151,9 +171,11 @@ export default function StudentLearnPage({ params }: { params: { courseId: strin
               {
                 ...lastMessage,
                 content: lastMessage.content + data.content,
+                isStreaming: !isLast,
               },
             ]
           }
+
           return [
             ...prev,
             {
@@ -161,7 +183,7 @@ export default function StudentLearnPage({ params }: { params: { courseId: strin
               role: "assistant",
               content: data.content,
               timestamp: new Date(),
-              isStreaming: true,
+              isStreaming: !isLast,
             },
           ]
         })

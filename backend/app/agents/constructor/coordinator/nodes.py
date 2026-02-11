@@ -24,6 +24,19 @@ from .prompts import (
 logger = logging.getLogger(__name__)
 
 
+# Valid coordinator actions returned by the action router.
+VALID_ACTIONS = {
+    "collect_info",
+    "request_files",
+    "process_files",
+    "analyze_structure",
+    "generate_quizzes",
+    "validate_course",
+    "finalize",
+    "respond",
+}
+
+
 # =============================================================================
 # Node Functions
 # =============================================================================
@@ -34,6 +47,13 @@ async def welcome_node(state: ConstructorState) -> Dict[str, Any]:
 
     This is the entry point for new construction sessions.
     """
+    if state.get("messages") and state.get("phase") != "welcome":
+        # Entry-point node runs on each invoke; initialize only once.
+        return {
+            **state,
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+
     # Generate welcome message
     welcome = WELCOME_MESSAGE
 
@@ -83,16 +103,19 @@ async def intake_node(state: ConstructorState) -> Dict[str, Any]:
 
     # Get LLM response
     response = await llm.ainvoke(lc_messages)
+    assistant_text = (getattr(response, "content", "") or "").strip()
+    if not assistant_text:
+        assistant_text = _default_coordinator_reply(state)
 
     # Extract course info from conversation if in info_gathering phase
     course_info_updates = {}
     if state.get("phase") == "info_gathering":
-        course_info_updates = await _extract_course_info(state, response.content)
+        course_info_updates = await _extract_course_info(state, assistant_text)
 
     return {
         "messages": [{
             "role": "assistant",
-            "content": response.content,
+            "content": assistant_text,
             "timestamp": datetime.utcnow().isoformat(),
         }],
         "course_info": {**state.get("course_info", {}), **course_info_updates},
@@ -108,6 +131,20 @@ async def route_action_node(state: ConstructorState) -> Dict[str, Any]:
     what should happen next.
     """
     llm = get_llm(temperature=0.3)
+    default_action = _determine_default_action(state)
+
+    # For pipeline progression, prefer deterministic routing over model output.
+    if default_action in {
+        "process_files",
+        "analyze_structure",
+        "generate_quizzes",
+        "validate_course",
+        "finalize",
+    }:
+        return {
+            "pending_subagent": default_action,
+            "updated_at": datetime.utcnow().isoformat(),
+        }
 
     # Determine what action to take
     has_course_info = bool(
@@ -138,10 +175,12 @@ async def route_action_node(state: ConstructorState) -> Dict[str, Any]:
         if "```json" in content:
             content = content.split("```json")[1].split("```")[0]
         action_data = json.loads(content.strip())
-        next_action = action_data.get("action", "respond")
+        next_action = str(action_data.get("action", "respond")).strip().lower()
+        if next_action not in VALID_ACTIONS:
+            next_action = default_action
     except (json.JSONDecodeError, KeyError):
         # Default based on state
-        next_action = _determine_default_action(state)
+        next_action = default_action
 
     return {
         "pending_subagent": next_action,
@@ -195,11 +234,14 @@ async def respond_node(state: ConstructorState) -> Dict[str, Any]:
     lc_messages.extend(messages_to_langchain(state.get("messages", [])))
 
     response = await llm.ainvoke(lc_messages)
+    assistant_text = (getattr(response, "content", "") or "").strip()
+    if not assistant_text:
+        assistant_text = _default_coordinator_reply(state)
 
     return {
         "messages": [{
             "role": "assistant",
-            "content": response.content,
+            "content": assistant_text,
             "timestamp": datetime.utcnow().isoformat(),
         }],
         "pending_subagent": None,
@@ -310,6 +352,24 @@ def _determine_default_action(state: ConstructorState) -> str:
     return "respond"
 
 
+def _default_coordinator_reply(state: ConstructorState) -> str:
+    """Fallback assistant reply when the model returns empty content."""
+    course_info = state.get("course_info", {})
+    if not course_info.get("title") or not course_info.get("description"):
+        return (
+            "Let's start with your course basics. Please share:\n"
+            "1) Course title\n"
+            "2) Short description\n"
+            "3) Difficulty (beginner/intermediate/advanced)"
+        )
+    if not state.get("uploaded_files"):
+        return (
+            "Great, I have the course basics. Next, upload your materials "
+            "(PDF, PPT/PPTX, DOCX, TXT, or video) so I can process them."
+        )
+    return "Got it. Tell me what you want to do next, and I'll guide you step by step."
+
+
 # =============================================================================
 # Routing Functions
 # =============================================================================
@@ -319,17 +379,19 @@ def route_by_phase(state: ConstructorState) -> str:
     action = state.get("pending_subagent", "respond")
 
     action_to_node = {
-        "collect_info": "intake",
-        "request_files": "respond",
+        # Intake already generated assistant guidance for this turn.
+        # End the turn instead of recursively looping without new user input.
+        "collect_info": "end_turn",
+        "request_files": "end_turn",
         "process_files": "dispatch",
         "analyze_structure": "dispatch",
         "generate_quizzes": "dispatch",
         "validate_course": "dispatch",
         "finalize": "finalize",
-        "respond": "respond",
+        "respond": "end_turn",
     }
 
-    return action_to_node.get(action, "respond")
+    return action_to_node.get(action, "end_turn")
 
 
 def should_continue(state: ConstructorState) -> str:
