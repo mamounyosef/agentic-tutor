@@ -1,0 +1,41 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	welcome(welcome)
+	intake(intake)
+	route_action(route_action)
+	dispatch(dispatch)
+	respond(respond)
+	finalize(finalize)
+	end_turn(end_turn)
+	ingestion(ingestion)
+	structure(structure)
+	quiz(quiz)
+	validation(validation)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> welcome;
+	dispatch -.-> ingestion;
+	dispatch -.-> quiz;
+	dispatch -. &nbsp;coordinator&nbsp; .-> respond;
+	dispatch -.-> structure;
+	dispatch -.-> validation;
+	ingestion --> respond;
+	intake --> route_action;
+	quiz --> respond;
+	respond -. &nbsp;end&nbsp; .-> __end__;
+	respond -. &nbsp;continue&nbsp; .-> end_turn;
+	route_action -.-> dispatch;
+	route_action -.-> end_turn;
+	route_action -.-> finalize;
+	structure --> respond;
+	validation --> respond;
+	welcome --> intake;
+	end_turn --> __end__;
+	finalize --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc

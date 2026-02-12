@@ -1,0 +1,101 @@
+{
+  "output_dir": "artifacts\\langgraph_viz",
+  "workflows": [
+    {
+      "name": "constructor_coordinator",
+      "description": "Top-level constructor coordinator graph",
+      "node_count": 13,
+      "edge_count": 19,
+      "paths": {
+        "mermaid": "artifacts\\langgraph_viz\\constructor_coordinator\\constructor_coordinator.mmd",
+        "json": "artifacts\\langgraph_viz\\constructor_coordinator\\constructor_coordinator.json",
+        "ascii": null,
+        "png": "artifacts\\langgraph_viz\\constructor_coordinator\\constructor_coordinator.png"
+      },
+      "warnings": {
+        "ascii": "Install grandalf to draw graphs: `pip install grandalf`.",
+        "png": null
+      }
+    },
+    {
+      "name": "constructor_ingestion",
+      "description": "Constructor ingestion sub-agent graph",
+      "node_count": 7,
+      "edge_count": 6,
+      "paths": {
+        "mermaid": "artifacts\\langgraph_viz\\constructor_ingestion\\constructor_ingestion.mmd",
+        "json": "artifacts\\langgraph_viz\\constructor_ingestion\\constructor_ingestion.json",
+        "ascii": null,
+        "png": "artifacts\\langgraph_viz\\constructor_ingestion\\constructor_ingestion.png"
+      },
+      "warnings": {
+        "ascii": "Install grandalf to draw graphs: `pip install grandalf`.",
+        "png": null
+      }
+    },
+    {
+      "name": "constructor_structure",
+      "description": "Constructor structure sub-agent graph",
+      "node_count": 10,
+      "edge_count": 9,
+      "paths": {
+        "mermaid": "artifacts\\langgraph_viz\\constructor_structure\\constructor_structure.mmd",
+        "json": "artifacts\\langgraph_viz\\constructor_structure\\constructor_structure.json",
+        "ascii": null,
+        "png": "artifacts\\langgraph_viz\\constructor_structure\\constructor_structure.png"
+      },
+      "warnings": {
+        "ascii": "Install grandalf to draw graphs: `pip install grandalf`.",
+        "png": null
+      }
+    },
+    {
+      "name": "constructor_quiz_gen",
+      "description": "Constructor quiz-generation sub-agent graph",
+      "node_count": 9,
+      "edge_count": 10,
+      "paths": {
+        "mermaid": "artifacts\\langgraph_viz\\constructor_quiz_gen\\constructor_quiz_gen.mmd",
+        "json": "artifacts\\langgraph_viz\\constructor_quiz_gen\\constructor_quiz_gen.json",
+        "ascii": null,
+        "png": "artifacts\\langgraph_viz\\constructor_quiz_gen\\constructor_quiz_gen.png"
+      },
+      "warnings": {
+        "ascii": "Install grandalf to draw graphs: `pip install grandalf`.",
+        "png": null
+      }
+    },
+    {
+      "name": "constructor_validation",
+      "description": "Constructor validation sub-agent graph",
+      "node_count": 7,
+      "edge_count": 6,
+      "paths": {
+        "mermaid": "artifacts\\langgraph_viz\\constructor_validation\\constructor_validation.mmd",
+        "json": "artifacts\\langgraph_viz\\constructor_validation\\constructor_validation.json",
+        "ascii": null,
+        "png": "artifacts\\langgraph_viz\\constructor_validation\\constructor_validation.png"
+      },
+      "warnings": {
+        "ascii": "Install grandalf to draw graphs: `pip install grandalf`.",
+        "png": null
+      }
+    },
+    {
+      "name": "tutor_coordinator",
+      "description": "Tutor coordinator graph",
+      "node_count": 10,
+      "edge_count": 17,
+      "paths": {
+        "mermaid": "artifacts\\langgraph_viz\\tutor_coordinator\\tutor_coordinator.mmd",
+        "json": "artifacts\\langgraph_viz\\tutor_coordinator\\tutor_coordinator.json",
+        "ascii": null,
+        "png": "artifacts\\langgraph_viz\\tutor_coordinator\\tutor_coordinator.png"
+      },
+      "warnings": {
+        "ascii": "Install grandalf to draw graphs: `pip install grandalf`.",
+        "png": null
+      }
+    }
+  ]
+}

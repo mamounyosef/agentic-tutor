@@ -1,0 +1,111 @@
+{
+  "nodes": [
+    {
+      "id": "__start__",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "__start__"
+      }
+    },
+    {
+      "id": "detect_types",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "detect_types"
+      }
+    },
+    {
+      "id": "extract",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "extract"
+      }
+    },
+    {
+      "id": "chunk",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "chunk"
+      }
+    },
+    {
+      "id": "store",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "store"
+      }
+    },
+    {
+      "id": "report",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "report"
+      }
+    },
+    {
+      "id": "__end__"
+    }
+  ],
+  "edges": [
+    {
+      "source": "__start__",
+      "target": "detect_types"
+    },
+    {
+      "source": "chunk",
+      "target": "store"
+    },
+    {
+      "source": "detect_types",
+      "target": "extract"
+    },
+    {
+      "source": "extract",
+      "target": "chunk"
+    },
+    {
+      "source": "store",
+      "target": "report"
+    },
+    {
+      "source": "report",
+      "target": "__end__"
+    }
+  ]
+}

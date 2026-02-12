@@ -38,6 +38,7 @@ interface Message {
   content: string
   timestamp: Date
   isStreaming?: boolean
+  streamId?: string
 }
 
 interface UploadedFile {
@@ -172,10 +173,20 @@ export default function ConstructorDashboard() {
       if (data.type === "token") {
         const isFirst = Boolean(data.metadata?.is_first)
         const isLast = Boolean(data.metadata?.is_last)
+        const streamId = String(data.metadata?.stream_id || "")
 
         // Streaming token
         setMessages((prev) => {
           if (isFirst) {
+            const last = prev[prev.length - 1]
+            if (
+              last?.role === "assistant" &&
+              !last.isStreaming &&
+              streamId &&
+              last.streamId === streamId
+            ) {
+              return prev
+            }
             return [
               ...prev,
               {
@@ -184,20 +195,30 @@ export default function ConstructorDashboard() {
                 content: data.content,
                 timestamp: new Date(),
                 isStreaming: !isLast,
+                streamId,
               },
             ]
           }
 
-          const lastMessage = prev[prev.length - 1]
-          if (lastMessage?.role === "assistant" && lastMessage.isStreaming) {
-            return [
-              ...prev.slice(0, -1),
-              {
-                ...lastMessage,
-                content: lastMessage.content + data.content,
-                isStreaming: !isLast,
-              },
-            ]
+          const idx = [...prev].reverse().findIndex(
+            (m) =>
+              m.role === "assistant" &&
+              m.isStreaming &&
+              (!!streamId ? m.streamId === streamId : true)
+          )
+          if (idx !== -1) {
+            const realIdx = prev.length - 1 - idx
+            const current = prev[realIdx]
+            return prev.map((m, i) =>
+              i === realIdx
+                ? {
+                    ...current,
+                    content: current.content + data.content,
+                    isStreaming: !isLast,
+                    streamId: current.streamId || streamId,
+                  }
+                : m
+            )
           }
 
           return [
@@ -208,6 +229,7 @@ export default function ConstructorDashboard() {
               content: data.content,
               timestamp: new Date(),
               isStreaming: !isLast,
+              streamId,
             },
           ]
         })

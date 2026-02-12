@@ -54,10 +54,12 @@ async def welcome_node(state: ConstructorState) -> Dict[str, Any]:
 
     This is the entry point for new construction sessions.
     """
-    if state.get("messages") and state.get("phase") != "welcome":
-        # Entry-point node runs on each invoke; initialize only once.
+    if state.get("messages"):
+        # Entry-point node runs on each invoke. Never return full state here
+        # because messages are reducer-managed and full echoing can duplicate
+        # chat history on every turn.
         return {
-            **state,
+            "phase": "info_gathering" if state.get("phase") == "welcome" else state.get("phase"),
             "updated_at": datetime.utcnow().isoformat(),
         }
 
@@ -86,35 +88,39 @@ async def intake_node(state: ConstructorState) -> Dict[str, Any]:
     - Intent classification
     - Response generation
     """
-    llm = get_llm(temperature=0.7)
+    llm = get_llm(temperature=0.3)
 
-    # Build context
-    course_title = state.get("course_info", {}).get("title", "Not set")
-    files_count = len(state.get("uploaded_files", []))
-    topics_count = len(state.get("topics", []))
-    questions_count = len(state.get("quiz_questions", []))
+    deterministic_reply = _deterministic_coordinator_reply(state)
+    if deterministic_reply:
+        assistant_text = deterministic_reply
+    else:
+        # Build context
+        course_title = state.get("course_info", {}).get("title", "Not set")
+        files_count = len(state.get("uploaded_files", []))
+        topics_count = len(state.get("topics", []))
+        questions_count = len(state.get("quiz_questions", []))
 
-    # Format system prompt with current state
-    system_prompt = COORDINATOR_SYSTEM_PROMPT.format(
-        phase=state.get("phase", "welcome"),
-        progress=state.get("progress", 0),
-        course_title=course_title,
-        files_count=files_count,
-        topics_count=topics_count,
-        questions_count=questions_count,
-    )
+        # Format system prompt with current state
+        system_prompt = COORDINATOR_SYSTEM_PROMPT.format(
+            phase=state.get("phase", "welcome"),
+            progress=state.get("progress", 0),
+            course_title=course_title,
+            files_count=files_count,
+            topics_count=topics_count,
+            questions_count=questions_count,
+        )
 
-    # Convert messages to LangChain format
-    lc_messages = [SystemMessage(content=system_prompt)]
-    lc_messages.extend(messages_to_langchain(state.get("messages", [])))
+        # Convert messages to LangChain format
+        lc_messages = [SystemMessage(content=system_prompt)]
+        lc_messages.extend(messages_to_langchain(state.get("messages", [])))
 
-    # Get LLM response
-    response = await llm.ainvoke(lc_messages)
-    assistant_text = (getattr(response, "content", "") or "").strip()
-    if not assistant_text:
-        assistant_text = _default_coordinator_reply(state)
-    elif _has_course_basics(state) and _looks_like_basics_request(assistant_text):
-        assistant_text = _default_coordinator_reply(state)
+        # Get LLM response
+        response = await llm.ainvoke(lc_messages)
+        assistant_text = (getattr(response, "content", "") or "").strip()
+        if not assistant_text:
+            assistant_text = _default_coordinator_reply(state)
+        elif _has_course_basics(state) and _looks_like_basics_request(assistant_text):
+            assistant_text = _default_coordinator_reply(state)
 
     # Extract course info from conversation if in info_gathering phase.
     # Use deterministic parsing first, then enrich via LLM extraction.
@@ -289,7 +295,7 @@ async def respond_node(state: ConstructorState) -> Dict[str, Any]:
             "updated_at": datetime.utcnow().isoformat(),
         }
 
-    llm = get_llm(temperature=0.7)
+    llm = get_llm(temperature=0.3)
 
     # Build context for response
     system_prompt = COORDINATOR_SYSTEM_PROMPT.format(
@@ -470,7 +476,15 @@ def _normalize_course_info(raw: Dict[str, Any]) -> Dict[str, Any]:
     """Normalize and sanitize extracted course info fields."""
     updates: Dict[str, Any] = {}
 
-    title = " ".join(str(raw.get("title", "")).split()).strip()
+    title = str(raw.get("title", "")).strip()
+    # Keep title bounded to title-only text even when a model returns merged
+    # "Title + Description + Difficulty" blocks.
+    title = re.split(
+        r"(?is)(?:\n|(?:\s{2,}))(?:description|goal|objective|difficulty(?:\s*level)?)\s*:",
+        title,
+        maxsplit=1,
+    )[0].strip()
+    title = " ".join(title.split())
     description = str(raw.get("description", "")).strip()
     difficulty = _normalize_difficulty(str(raw.get("difficulty", "")))
     tags = raw.get("tags")
@@ -519,7 +533,8 @@ def _extract_course_info_heuristic(state: ConstructorState) -> Dict[str, Any]:
     updates: Dict[str, Any] = {}
 
     title_match = re.search(
-        r"(?im)^\s*(?:course\s*title|title)(?:\s*\([^)]*\))?\s*:\s*(.+)$",
+        r"(?is)(?:^|\n)\s*(?:course\s*title|title)(?:\s*\([^)]*\))?\s*:\s*(.+?)"
+        r"(?=(?:\s+(?:difficulty(?:\s*level)?|description|goal|objective)\s*:)|\n|$)",
         combined,
     )
     if title_match:
@@ -564,6 +579,8 @@ def _determine_default_action(state: ConstructorState) -> str:
     processed_files = state.get("processed_files", [])
     topics = state.get("topics", [])
     questions = state.get("quiz_questions", [])
+    structure_result = state.get("subagent_results", {}).get("structure", {})
+    structure_completed = bool(structure_result.get("status"))
 
     # Prioritize concrete workflow progression whenever files/results exist,
     # even if phase is still marked as info_gathering.
@@ -571,6 +588,10 @@ def _determine_default_action(state: ConstructorState) -> str:
         return "process_files"
 
     if processed_files and not topics:
+        # Avoid infinite analyze -> no-topics -> analyze loops when structure
+        # already completed but couldn't derive topics from current materials.
+        if structure_completed:
+            return "respond"
         return "analyze_structure"
 
     if topics and not questions:
@@ -597,6 +618,8 @@ def _default_coordinator_reply(state: ConstructorState) -> str:
     processed_files = state.get("processed_files", [])
     topics = state.get("topics", [])
     questions = state.get("quiz_questions", [])
+    structure_result = state.get("subagent_results", {}).get("structure", {})
+    structure_completed = bool(structure_result.get("status"))
 
     if not course_info.get("title") or not course_info.get("description"):
         return (
@@ -616,6 +639,12 @@ def _default_coordinator_reply(state: ConstructorState) -> str:
             "Say 'create the course now' and I'll start ingestion."
         )
     if processed_files and not topics:
+        if structure_completed:
+            return (
+                "I processed your files, but I couldn't derive a reliable course structure "
+                "from the current content. Please upload clearer supporting material "
+                "(slides/PDF/notes) or provide a short outline, and I'll continue."
+            )
         return "Your files are processed. Next step is structure analysis."
     if topics and not questions:
         return "Course structure is ready. Next step is quiz generation."
@@ -624,6 +653,57 @@ def _default_coordinator_reply(state: ConstructorState) -> str:
     if state.get("validation_passed"):
         return "Validation passed. Finalizing and publishing your course."
     return "Tell me what you want to do next and I'll continue the workflow."
+
+
+def _deterministic_coordinator_reply(state: ConstructorState) -> str:
+    """Return a deterministic coordinator reply for common control intents."""
+    messages = state.get("messages", [])
+    user_messages = [message_content(m).strip() for m in messages if message_role(m) == "user"]
+    if not user_messages:
+        return ""
+
+    last_user = user_messages[-1].lower()
+    uploaded_files = state.get("uploaded_files", [])
+    processed_files = state.get("processed_files", [])
+    has_basics = _has_course_basics(state)
+
+    if not has_basics:
+        return ""
+
+    asks_upload_visibility = (
+        ("upload" in last_user or "uploaded" in last_user)
+        and ("can you see" in last_user or "do you see" in last_user or "did you get" in last_user)
+    )
+    asks_to_create = (
+        "create the course" in last_user
+        or "build the course" in last_user
+        or "create it" in last_user
+    )
+    asks_status = (
+        "are you done" in last_user
+        or "done?" in last_user
+        or "status" in last_user
+        or "progress" in last_user
+    )
+
+    if asks_upload_visibility:
+        if not uploaded_files:
+            return "I do not see uploaded files in this session yet. Please upload a file and I will process it."
+        names = [str(f.get("original_filename") or f.get("file_path") or "file") for f in uploaded_files]
+        preview = ", ".join(names[:3])
+        if len(names) > 3:
+            preview += f", and {len(names) - 3} more"
+        return f"Yes, I can see {len(names)} uploaded file(s): {preview}. If you want, say 'create the course now' and I will continue processing."
+
+    if asks_to_create and uploaded_files:
+        if len(processed_files) < len(uploaded_files):
+            return "Great. I have your course basics and uploaded materials. I will continue with ingestion and then build structure, quizzes, and validation."
+        return "Great. Your files are already processed, so I will proceed with structure analysis, quiz generation, and validation."
+
+    if asks_status and uploaded_files and len(processed_files) < len(uploaded_files):
+        return "I am still processing uploaded materials. Once processing finishes, I will continue with structure analysis and quiz generation."
+
+    return ""
 
 
 def _has_course_basics(state: ConstructorState) -> bool:

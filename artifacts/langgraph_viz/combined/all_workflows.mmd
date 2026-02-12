@@ -1,0 +1,217 @@
+flowchart TB
+
+subgraph constructor_coordinator["Constructor Coordinator"]
+direction TB
+constructor_coordinator____start__(("START"))
+constructor_coordinator__welcome["welcome"]
+constructor_coordinator__intake["intake"]
+constructor_coordinator__route_action["route_action"]
+constructor_coordinator__dispatch["dispatch"]
+constructor_coordinator__respond["respond"]
+constructor_coordinator__finalize["finalize"]
+constructor_coordinator__end_turn["end_turn"]
+constructor_coordinator__ingestion["ingestion"]
+constructor_coordinator__structure["structure"]
+constructor_coordinator__quiz["quiz"]
+constructor_coordinator__validation["validation"]
+constructor_coordinator____end__(("END"))
+constructor_coordinator____start__ --> constructor_coordinator__welcome
+constructor_coordinator__dispatch -.-> constructor_coordinator__ingestion
+constructor_coordinator__dispatch -.-> constructor_coordinator__quiz
+constructor_coordinator__dispatch -- "coordinator" -.-> constructor_coordinator__respond
+constructor_coordinator__dispatch -.-> constructor_coordinator__structure
+constructor_coordinator__dispatch -.-> constructor_coordinator__validation
+constructor_coordinator__ingestion --> constructor_coordinator__respond
+constructor_coordinator__intake --> constructor_coordinator__route_action
+constructor_coordinator__quiz --> constructor_coordinator__respond
+constructor_coordinator__respond -- "end" -.-> constructor_coordinator____end__
+constructor_coordinator__respond -- "continue" -.-> constructor_coordinator__end_turn
+constructor_coordinator__route_action -.-> constructor_coordinator__dispatch
+constructor_coordinator__route_action -.-> constructor_coordinator__end_turn
+constructor_coordinator__route_action -.-> constructor_coordinator__finalize
+constructor_coordinator__structure --> constructor_coordinator__respond
+constructor_coordinator__validation --> constructor_coordinator__respond
+constructor_coordinator__welcome --> constructor_coordinator__intake
+constructor_coordinator__end_turn --> constructor_coordinator____end__
+constructor_coordinator__finalize --> constructor_coordinator____end__
+end
+
+subgraph constructor_ingestion["Constructor Ingestion Sub-Agent"]
+direction TB
+constructor_ingestion____start__(("START"))
+constructor_ingestion__detect_types["detect_types"]
+constructor_ingestion__extract["extract"]
+constructor_ingestion__chunk["chunk"]
+constructor_ingestion__store["store"]
+constructor_ingestion__report["report"]
+constructor_ingestion____end__(("END"))
+constructor_ingestion____start__ --> constructor_ingestion__detect_types
+constructor_ingestion__chunk --> constructor_ingestion__store
+constructor_ingestion__detect_types --> constructor_ingestion__extract
+constructor_ingestion__extract --> constructor_ingestion__chunk
+constructor_ingestion__store --> constructor_ingestion__report
+constructor_ingestion__report --> constructor_ingestion____end__
+end
+
+subgraph constructor_structure["Constructor Structure Sub-Agent"]
+direction TB
+constructor_structure____start__(("START"))
+constructor_structure__analyze_content["analyze_content"]
+constructor_structure__detect_topics["detect_topics"]
+constructor_structure__group_into_units["group_into_units"]
+constructor_structure__identify_prerequisites["identify_prerequisites"]
+constructor_structure__build_hierarchy["build_hierarchy"]
+constructor_structure__validate_structure["validate_structure"]
+constructor_structure__suggest_organization["suggest_organization"]
+constructor_structure__finalize_structure["finalize_structure"]
+constructor_structure____end__(("END"))
+constructor_structure____start__ --> constructor_structure__analyze_content
+constructor_structure__analyze_content --> constructor_structure__detect_topics
+constructor_structure__build_hierarchy --> constructor_structure__validate_structure
+constructor_structure__detect_topics --> constructor_structure__group_into_units
+constructor_structure__group_into_units --> constructor_structure__identify_prerequisites
+constructor_structure__identify_prerequisites --> constructor_structure__build_hierarchy
+constructor_structure__suggest_organization --> constructor_structure__finalize_structure
+constructor_structure__validate_structure --> constructor_structure__suggest_organization
+constructor_structure__finalize_structure --> constructor_structure____end__
+end
+
+subgraph constructor_quiz_gen["Constructor Quiz Generation Sub-Agent"]
+direction TB
+constructor_quiz_gen____start__(("START"))
+constructor_quiz_gen__plan_quiz_generation["plan_quiz_generation"]
+constructor_quiz_gen__select_topic["select_topic"]
+constructor_quiz_gen__generate_questions["generate_questions"]
+constructor_quiz_gen__validate_questions["validate_questions"]
+constructor_quiz_gen__create_rubrics["create_rubrics"]
+constructor_quiz_gen__check_completion["check_completion"]
+constructor_quiz_gen__finalize_quiz_bank["finalize_quiz_bank"]
+constructor_quiz_gen____end__(("END"))
+constructor_quiz_gen____start__ --> constructor_quiz_gen__plan_quiz_generation
+constructor_quiz_gen__check_completion -- "finalize" -.-> constructor_quiz_gen__finalize_quiz_bank
+constructor_quiz_gen__check_completion -- "continue" -.-> constructor_quiz_gen__select_topic
+constructor_quiz_gen__create_rubrics --> constructor_quiz_gen__check_completion
+constructor_quiz_gen__generate_questions --> constructor_quiz_gen__validate_questions
+constructor_quiz_gen__plan_quiz_generation --> constructor_quiz_gen__select_topic
+constructor_quiz_gen__select_topic -- "end" -.-> constructor_quiz_gen__finalize_quiz_bank
+constructor_quiz_gen__select_topic -- "generate" -.-> constructor_quiz_gen__generate_questions
+constructor_quiz_gen__validate_questions --> constructor_quiz_gen__create_rubrics
+constructor_quiz_gen__finalize_quiz_bank --> constructor_quiz_gen____end__
+end
+
+subgraph constructor_validation["Constructor Validation Sub-Agent"]
+direction TB
+constructor_validation____start__(("START"))
+constructor_validation__validate_content["validate_content"]
+constructor_validation__validate_structure["validate_structure"]
+constructor_validation__validate_quiz["validate_quiz"]
+constructor_validation__calculate_readiness["calculate_readiness"]
+constructor_validation__generate_report["generate_report"]
+constructor_validation____end__(("END"))
+constructor_validation____start__ --> constructor_validation__validate_content
+constructor_validation__calculate_readiness --> constructor_validation__generate_report
+constructor_validation__validate_content --> constructor_validation__validate_structure
+constructor_validation__validate_quiz --> constructor_validation__calculate_readiness
+constructor_validation__validate_structure --> constructor_validation__validate_quiz
+constructor_validation__generate_report --> constructor_validation____end__
+end
+
+subgraph tutor_coordinator["Tutor Coordinator"]
+direction TB
+tutor_coordinator____start__(("START"))
+tutor_coordinator__welcome["welcome"]
+tutor_coordinator__intake["intake"]
+tutor_coordinator__explainer["explainer"]
+tutor_coordinator__gap_analysis["gap_analysis"]
+tutor_coordinator__quiz["quiz"]
+tutor_coordinator__grade_quiz["grade_quiz"]
+tutor_coordinator__summarize["summarize"]
+tutor_coordinator__end_turn["end_turn"]
+tutor_coordinator____end__(("END"))
+tutor_coordinator____start__ --> tutor_coordinator__welcome
+tutor_coordinator__explainer -.-> tutor_coordinator__intake
+tutor_coordinator__explainer -.-> tutor_coordinator__quiz
+tutor_coordinator__gap_analysis --> tutor_coordinator__intake
+tutor_coordinator__grade_quiz -.-> tutor_coordinator__intake
+tutor_coordinator__grade_quiz -.-> tutor_coordinator__quiz
+tutor_coordinator__intake -.-> tutor_coordinator__end_turn
+tutor_coordinator__intake -.-> tutor_coordinator__explainer
+tutor_coordinator__intake -.-> tutor_coordinator__gap_analysis
+tutor_coordinator__intake -.-> tutor_coordinator__grade_quiz
+tutor_coordinator__intake -.-> tutor_coordinator__quiz
+tutor_coordinator__intake -.-> tutor_coordinator__summarize
+tutor_coordinator__quiz -.-> tutor_coordinator__intake
+tutor_coordinator__quiz -.-> tutor_coordinator__quiz
+tutor_coordinator__welcome --> tutor_coordinator__intake
+tutor_coordinator__end_turn --> tutor_coordinator____end__
+tutor_coordinator__summarize --> tutor_coordinator____end__
+end
+
+%% Cross-workflow orchestration links
+constructor_coordinator__ingestion -. "invokes" .-> constructor_ingestion____start__
+constructor_coordinator__structure -. "invokes" .-> constructor_structure____start__
+constructor_coordinator__quiz -. "invokes" .-> constructor_quiz_gen____start__
+constructor_coordinator__validation -. "invokes" .-> constructor_validation____start__
+constructor_ingestion____end__ -. "returns" .-> constructor_coordinator__respond
+constructor_structure____end__ -. "returns" .-> constructor_coordinator__respond
+constructor_quiz_gen____end__ -. "returns" .-> constructor_coordinator__respond
+constructor_validation____end__ -. "returns" .-> constructor_coordinator__respond
+
+classDef normal fill:#e5e7eb,stroke:#374151,stroke-width:1px,color:#111827;
+classDef terminal fill:#d1fae5,stroke:#047857,stroke-width:1.5px,color:#064e3b;
+class constructor_coordinator____start__ terminal;
+class constructor_coordinator__welcome normal;
+class constructor_coordinator__intake normal;
+class constructor_coordinator__route_action normal;
+class constructor_coordinator__dispatch normal;
+class constructor_coordinator__respond normal;
+class constructor_coordinator__finalize normal;
+class constructor_coordinator__end_turn normal;
+class constructor_coordinator__ingestion normal;
+class constructor_coordinator__structure normal;
+class constructor_coordinator__quiz normal;
+class constructor_coordinator__validation normal;
+class constructor_coordinator____end__ terminal;
+class constructor_ingestion____start__ terminal;
+class constructor_ingestion__detect_types normal;
+class constructor_ingestion__extract normal;
+class constructor_ingestion__chunk normal;
+class constructor_ingestion__store normal;
+class constructor_ingestion__report normal;
+class constructor_ingestion____end__ terminal;
+class constructor_structure____start__ terminal;
+class constructor_structure__analyze_content normal;
+class constructor_structure__detect_topics normal;
+class constructor_structure__group_into_units normal;
+class constructor_structure__identify_prerequisites normal;
+class constructor_structure__build_hierarchy normal;
+class constructor_structure__validate_structure normal;
+class constructor_structure__suggest_organization normal;
+class constructor_structure__finalize_structure normal;
+class constructor_structure____end__ terminal;
+class constructor_quiz_gen____start__ terminal;
+class constructor_quiz_gen__plan_quiz_generation normal;
+class constructor_quiz_gen__select_topic normal;
+class constructor_quiz_gen__generate_questions normal;
+class constructor_quiz_gen__validate_questions normal;
+class constructor_quiz_gen__create_rubrics normal;
+class constructor_quiz_gen__check_completion normal;
+class constructor_quiz_gen__finalize_quiz_bank normal;
+class constructor_quiz_gen____end__ terminal;
+class constructor_validation____start__ terminal;
+class constructor_validation__validate_content normal;
+class constructor_validation__validate_structure normal;
+class constructor_validation__validate_quiz normal;
+class constructor_validation__calculate_readiness normal;
+class constructor_validation__generate_report normal;
+class constructor_validation____end__ terminal;
+class tutor_coordinator____start__ terminal;
+class tutor_coordinator__welcome normal;
+class tutor_coordinator__intake normal;
+class tutor_coordinator__explainer normal;
+class tutor_coordinator__gap_analysis normal;
+class tutor_coordinator__quiz normal;
+class tutor_coordinator__grade_quiz normal;
+class tutor_coordinator__summarize normal;
+class tutor_coordinator__end_turn normal;
+class tutor_coordinator____end__ terminal;

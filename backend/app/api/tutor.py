@@ -397,19 +397,25 @@ async def list_courses(
     """
     async with get_constructor_session() as session:
         result = await session.execute(
-            select(Course).where(Course.is_published == True)
+            select(
+                Course.id,
+                Course.title,
+                Course.description,
+                Course.difficulty,
+                Course.created_at,
+            ).where(Course.is_published == True)
         )
-        courses = result.scalars().all()
+        courses = result.all()
 
         return [
             {
-                "id": course.id,
-                "title": course.title,
-                "description": course.description,
-                "difficulty": course.difficulty,
-                "created_at": course.created_at,
+                "id": row.id,
+                "title": row.title,
+                "description": row.description,
+                "difficulty": row.difficulty,
+                "created_at": row.created_at,
             }
-            for course in courses
+            for row in courses
         ]
 
 
@@ -422,9 +428,14 @@ async def get_course_details(
     """Get detailed information about a course."""
     async with get_constructor_session() as session:
         result = await session.execute(
-            select(Course).where(Course.id == course_id)
+            select(
+                Course.id,
+                Course.title,
+                Course.description,
+                Course.difficulty,
+            ).where(Course.id == course_id)
         )
-        course = result.scalar_one_or_none()
+        course = result.first()
 
         if not course:
             raise HTTPException(
@@ -480,7 +491,7 @@ async def enroll_in_course(
     # Check if course exists
     async with get_constructor_session() as session:
         course_result = await session.execute(
-            select(Course).where(Course.id == request.course_id)
+            select(Course.id).where(Course.id == request.course_id)
         )
         course = course_result.scalar_one_or_none()
 

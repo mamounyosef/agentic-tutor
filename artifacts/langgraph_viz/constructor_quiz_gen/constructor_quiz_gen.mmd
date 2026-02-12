@@ -1,0 +1,28 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	plan_quiz_generation(plan_quiz_generation)
+	select_topic(select_topic)
+	generate_questions(generate_questions)
+	validate_questions(validate_questions)
+	create_rubrics(create_rubrics)
+	check_completion(check_completion)
+	finalize_quiz_bank(finalize_quiz_bank)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> plan_quiz_generation;
+	check_completion -. &nbsp;finalize&nbsp; .-> finalize_quiz_bank;
+	check_completion -. &nbsp;continue&nbsp; .-> select_topic;
+	create_rubrics --> check_completion;
+	generate_questions --> validate_questions;
+	plan_quiz_generation --> select_topic;
+	select_topic -. &nbsp;end&nbsp; .-> finalize_quiz_bank;
+	select_topic -. &nbsp;generate&nbsp; .-> generate_questions;
+	validate_questions --> create_rubrics;
+	finalize_quiz_bank --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc

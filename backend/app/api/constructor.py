@@ -1,10 +1,11 @@
 """Constructor API endpoints for course creation workflow."""
 
 import logging
+import hashlib
 from pathlib import Path
 from typing import Any, Optional
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel
@@ -202,7 +203,7 @@ async def constructor_websocket(
                     )
                     # Prevent duplicate assistant payloads across multiple node
                     # events in the same user turn.
-                    last_streamed_assistant: str | None = None
+                    streamed_assistant_hashes: set[str] = set()
 
                     trace_config = build_trace_config(
                         thread_id=session_id,
@@ -225,7 +226,12 @@ async def constructor_websocket(
                                 node_messages = node_output.get("messages", [])
                                 content = latest_assistant_after_last_user(node_messages)
                                 normalized_content = content.strip() if content else ""
-                                if normalized_content and normalized_content != last_streamed_assistant:
+                                if normalized_content:
+                                    content_hash = hashlib.sha256(normalized_content.encode("utf-8")).hexdigest()
+                                else:
+                                    content_hash = ""
+                                if normalized_content and content_hash not in streamed_assistant_hashes:
+                                    stream_id = f"{session_id}:{content_hash[:12]}"
                                     # Stream token by token (chunked)
                                     chunk_size = 10
                                     for i in range(0, len(normalized_content), chunk_size):
@@ -235,8 +241,9 @@ async def constructor_websocket(
                                             chunk,
                                             is_first=(i == 0),
                                             is_last=(i + chunk_size >= len(normalized_content)),
+                                            stream_id=stream_id,
                                         )
-                                    last_streamed_assistant = normalized_content
+                                    streamed_assistant_hashes.add(content_hash)
 
                                 # Send progress updates
                                 progress = node_output.get("progress")
@@ -270,6 +277,7 @@ async def constructor_websocket(
                             fallback,
                             is_first=True,
                             is_last=True,
+                            stream_id=f"{session_id}:llm-quota",
                         )
                     elif _is_llm_connection_error(e):
                         fallback = _llm_connection_message(settings)
@@ -278,6 +286,7 @@ async def constructor_websocket(
                             fallback,
                             is_first=True,
                             is_last=True,
+                            stream_id=f"{session_id}:llm-conn",
                         )
                     else:
                         await manager.send_error(
@@ -303,6 +312,7 @@ async def constructor_websocket(
                     WELCOME_MESSAGE,
                     is_first=True,
                     is_last=True,
+                    stream_id=f"{session_id}:welcome",
                 )
 
             elif message_type == "upload":
@@ -730,16 +740,16 @@ async def finalize_course(
     """
 
     async with get_constructor_session() as session:
-        # Verify course belongs to creator
+        # Verify course belongs to creator without selecting optional/legacy columns.
         result = await session.execute(
-            select(Course).where(
+            select(Course.id).where(
                 Course.id == request.course_id,
                 Course.creator_id == current_creator.id
             )
         )
-        course = result.scalar_one_or_none()
+        course_id = result.scalar_one_or_none()
 
-        if not course:
+        if course_id is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Course not found"
@@ -747,11 +757,15 @@ async def finalize_course(
 
         # In a real implementation, this would trigger validation
         # and update the course status
-        course.is_published = True
+        await session.execute(
+            update(Course)
+            .where(Course.id == request.course_id)
+            .values(is_published=True)
+        )
         await session.commit()
 
         return {
-            "course_id": course.id,
+            "course_id": request.course_id,
             "status": "published",
             "message": "Course published successfully!",
         }
@@ -766,20 +780,27 @@ async def list_courses(
 
     async with get_constructor_session() as session:
         result = await session.execute(
-            select(Course).where(Course.creator_id == current_creator.id)
+            select(
+                Course.id,
+                Course.title,
+                Course.description,
+                Course.difficulty,
+                Course.is_published,
+                Course.created_at,
+            ).where(Course.creator_id == current_creator.id)
         )
-        courses = result.scalars().all()
+        courses = result.all()
 
         return [
             {
-                "id": course.id,
-                "title": course.title,
-                "description": course.description,
-                "difficulty": course.difficulty,
-                "is_published": course.is_published,
-                "created_at": course.created_at,
+                "id": row.id,
+                "title": row.title,
+                "description": row.description,
+                "difficulty": row.difficulty,
+                "is_published": row.is_published,
+                "created_at": row.created_at,
             }
-            for course in courses
+            for row in courses
         ]
 
 
@@ -793,12 +814,20 @@ async def get_course(
 
     async with get_constructor_session() as session:
         result = await session.execute(
-            select(Course).where(
+            select(
+                Course.id,
+                Course.title,
+                Course.description,
+                Course.difficulty,
+                Course.is_published,
+                Course.created_at,
+                Course.updated_at,
+            ).where(
                 Course.id == course_id,
                 Course.creator_id == current_creator.id
             )
         )
-        course = result.scalar_one_or_none()
+        course = result.first()
 
         if not course:
             raise HTTPException(

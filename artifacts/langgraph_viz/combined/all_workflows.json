@@ -1,0 +1,46 @@
+{
+  "workflows": [
+    {
+      "key": "constructor_coordinator",
+      "title": "Constructor Coordinator",
+      "nodes": 13,
+      "edges": 19
+    },
+    {
+      "key": "constructor_ingestion",
+      "title": "Constructor Ingestion Sub-Agent",
+      "nodes": 7,
+      "edges": 6
+    },
+    {
+      "key": "constructor_structure",
+      "title": "Constructor Structure Sub-Agent",
+      "nodes": 10,
+      "edges": 9
+    },
+    {
+      "key": "constructor_quiz_gen",
+      "title": "Constructor Quiz Generation Sub-Agent",
+      "nodes": 9,
+      "edges": 10
+    },
+    {
+      "key": "constructor_validation",
+      "title": "Constructor Validation Sub-Agent",
+      "nodes": 7,
+      "edges": 6
+    },
+    {
+      "key": "tutor_coordinator",
+      "title": "Tutor Coordinator",
+      "nodes": 10,
+      "edges": 17
+    }
+  ],
+  "paths": {
+    "mermaid": "artifacts\\langgraph_viz\\combined\\all_workflows.mmd",
+    "json": "artifacts\\langgraph_viz\\combined\\all_workflows.json",
+    "png": "artifacts\\langgraph_viz\\combined\\all_workflows.png"
+  },
+  "png_warning": "Failed to reach https://mermaid.ink API while trying to render your graph. Status code: 414.\n\nTo resolve this issue:\n1. Check your internet connection and try again\n2. Try with higher retry settings: `draw_mermaid_png(..., max_retries=5, retry_delay=2.0)`\n3. Use the Pyppeteer rendering method which will render your graph locally in a browser: `draw_mermaid_png(..., draw_method=MermaidDrawMethod.PYPPETEER)` | Created fallback composite PNG from per-workflow images."
+}

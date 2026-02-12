@@ -1,0 +1,162 @@
+{
+  "nodes": [
+    {
+      "id": "__start__",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "__start__"
+      }
+    },
+    {
+      "id": "analyze_content",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "analyze_content"
+      }
+    },
+    {
+      "id": "detect_topics",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "detect_topics"
+      }
+    },
+    {
+      "id": "group_into_units",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "group_into_units"
+      }
+    },
+    {
+      "id": "identify_prerequisites",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "identify_prerequisites"
+      }
+    },
+    {
+      "id": "build_hierarchy",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "build_hierarchy"
+      }
+    },
+    {
+      "id": "validate_structure",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "validate_structure"
+      }
+    },
+    {
+      "id": "suggest_organization",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "suggest_organization"
+      }
+    },
+    {
+      "id": "finalize_structure",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "finalize_structure"
+      }
+    },
+    {
+      "id": "__end__"
+    }
+  ],
+  "edges": [
+    {
+      "source": "__start__",
+      "target": "analyze_content"
+    },
+    {
+      "source": "analyze_content",
+      "target": "detect_topics"
+    },
+    {
+      "source": "build_hierarchy",
+      "target": "validate_structure"
+    },
+    {
+      "source": "detect_topics",
+      "target": "group_into_units"
+    },
+    {
+      "source": "group_into_units",
+      "target": "identify_prerequisites"
+    },
+    {
+      "source": "identify_prerequisites",
+      "target": "build_hierarchy"
+    },
+    {
+      "source": "suggest_organization",
+      "target": "finalize_structure"
+    },
+    {
+      "source": "validate_structure",
+      "target": "suggest_organization"
+    },
+    {
+      "source": "finalize_structure",
+      "target": "__end__"
+    }
+  ]
+}

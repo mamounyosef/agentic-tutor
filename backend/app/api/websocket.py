@@ -99,6 +99,7 @@ class ConnectionManager:
         token: str,
         is_first: bool = False,
         is_last: bool = False,
+        stream_id: Optional[str] = None,
     ) -> bool:
         """
         Send a single token for streaming responses.
@@ -116,7 +117,11 @@ class ConnectionManager:
             session_id,
             token,
             message_type="token",
-            metadata={"is_first": is_first, "is_last": is_last},
+            metadata={
+                "is_first": is_first,
+                "is_last": is_last,
+                **({"stream_id": stream_id} if stream_id else {}),
+            },
         )
 
     async def send_status(

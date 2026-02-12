@@ -1,0 +1,206 @@
+{
+  "nodes": [
+    {
+      "id": "__start__",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "__start__"
+      }
+    },
+    {
+      "id": "welcome",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "welcome"
+      }
+    },
+    {
+      "id": "intake",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "intake"
+      }
+    },
+    {
+      "id": "explainer",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "explainer"
+      }
+    },
+    {
+      "id": "gap_analysis",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "gap_analysis"
+      }
+    },
+    {
+      "id": "quiz",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "quiz"
+      }
+    },
+    {
+      "id": "grade_quiz",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "grade_quiz"
+      }
+    },
+    {
+      "id": "summarize",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "summarize"
+      }
+    },
+    {
+      "id": "end_turn",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "end_turn"
+      }
+    },
+    {
+      "id": "__end__"
+    }
+  ],
+  "edges": [
+    {
+      "source": "__start__",
+      "target": "welcome"
+    },
+    {
+      "source": "explainer",
+      "target": "intake",
+      "conditional": true
+    },
+    {
+      "source": "explainer",
+      "target": "quiz",
+      "conditional": true
+    },
+    {
+      "source": "gap_analysis",
+      "target": "intake"
+    },
+    {
+      "source": "grade_quiz",
+      "target": "intake",
+      "conditional": true
+    },
+    {
+      "source": "grade_quiz",
+      "target": "quiz",
+      "conditional": true
+    },
+    {
+      "source": "intake",
+      "target": "end_turn",
+      "conditional": true
+    },
+    {
+      "source": "intake",
+      "target": "explainer",
+      "conditional": true
+    },
+    {
+      "source": "intake",
+      "target": "gap_analysis",
+      "conditional": true
+    },
+    {
+      "source": "intake",
+      "target": "grade_quiz",
+      "conditional": true
+    },
+    {
+      "source": "intake",
+      "target": "quiz",
+      "conditional": true
+    },
+    {
+      "source": "intake",
+      "target": "summarize",
+      "conditional": true
+    },
+    {
+      "source": "quiz",
+      "target": "intake",
+      "conditional": true
+    },
+    {
+      "source": "quiz",
+      "target": "quiz",
+      "conditional": true
+    },
+    {
+      "source": "welcome",
+      "target": "intake"
+    },
+    {
+      "source": "end_turn",
+      "target": "__end__"
+    },
+    {
+      "source": "summarize",
+      "target": "__end__"
+    }
+  ]
+}

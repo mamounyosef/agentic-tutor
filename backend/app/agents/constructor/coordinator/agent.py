@@ -124,7 +124,9 @@ class CoordinatorGraph:
 
     async def _end_turn_node(self, state: ConstructorState) -> ConstructorState:
         """Terminate execution for the current user turn without ending the session."""
-        return state
+        # Return an empty delta so streaming clients don't receive a full state
+        # replay (which can duplicate/stale message rendering).
+        return {}
 
     def _create_ingestion_node(self):
         """Create the ingestion sub-agent node."""
@@ -242,10 +244,10 @@ class CoordinatorGraph:
         """
         config = config or {"configurable": {"thread_id": self.session_id}}
         try:
-            current_state = self.get_state(config)
-            if current_state:
-                updated_state = {**current_state, **state_update}
-                self.graph.update_state(config, updated_state)
+            # Important: pass only the delta update.
+            # The `messages` field uses a reducer (`add_messages`), and sending a
+            # full merged state can duplicate historical messages.
+            self.graph.update_state(config, state_update)
         except Exception as e:
             logger.error(f"Error updating constructor state: {e}")
 

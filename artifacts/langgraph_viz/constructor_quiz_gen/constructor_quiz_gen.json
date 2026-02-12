@@ -1,0 +1,161 @@
+{
+  "nodes": [
+    {
+      "id": "__start__",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "__start__"
+      }
+    },
+    {
+      "id": "plan_quiz_generation",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "plan_quiz_generation"
+      }
+    },
+    {
+      "id": "select_topic",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "select_topic"
+      }
+    },
+    {
+      "id": "generate_questions",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "generate_questions"
+      }
+    },
+    {
+      "id": "validate_questions",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "validate_questions"
+      }
+    },
+    {
+      "id": "create_rubrics",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "create_rubrics"
+      }
+    },
+    {
+      "id": "check_completion",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "check_completion"
+      }
+    },
+    {
+      "id": "finalize_quiz_bank",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "finalize_quiz_bank"
+      }
+    },
+    {
+      "id": "__end__"
+    }
+  ],
+  "edges": [
+    {
+      "source": "__start__",
+      "target": "plan_quiz_generation"
+    },
+    {
+      "source": "check_completion",
+      "target": "finalize_quiz_bank",
+      "data": "finalize",
+      "conditional": true
+    },
+    {
+      "source": "check_completion",
+      "target": "select_topic",
+      "data": "continue",
+      "conditional": true
+    },
+    {
+      "source": "create_rubrics",
+      "target": "check_completion"
+    },
+    {
+      "source": "generate_questions",
+      "target": "validate_questions"
+    },
+    {
+      "source": "plan_quiz_generation",
+      "target": "select_topic"
+    },
+    {
+      "source": "select_topic",
+      "target": "finalize_quiz_bank",
+      "data": "end",
+      "conditional": true
+    },
+    {
+      "source": "select_topic",
+      "target": "generate_questions",
+      "data": "generate",
+      "conditional": true
+    },
+    {
+      "source": "validate_questions",
+      "target": "create_rubrics"
+    },
+    {
+      "source": "finalize_quiz_bank",
+      "target": "__end__"
+    }
+  ]
+}

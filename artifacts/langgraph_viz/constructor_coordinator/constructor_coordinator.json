@@ -1,0 +1,254 @@
+{
+  "nodes": [
+    {
+      "id": "__start__",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "__start__"
+      }
+    },
+    {
+      "id": "welcome",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "welcome"
+      }
+    },
+    {
+      "id": "intake",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "intake"
+      }
+    },
+    {
+      "id": "route_action",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "route_action"
+      }
+    },
+    {
+      "id": "dispatch",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "dispatch"
+      }
+    },
+    {
+      "id": "respond",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "respond"
+      }
+    },
+    {
+      "id": "finalize",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "finalize"
+      }
+    },
+    {
+      "id": "end_turn",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "end_turn"
+      }
+    },
+    {
+      "id": "ingestion",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "ingestion"
+      }
+    },
+    {
+      "id": "structure",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "structure"
+      }
+    },
+    {
+      "id": "quiz",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "quiz"
+      }
+    },
+    {
+      "id": "validation",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "validation"
+      }
+    },
+    {
+      "id": "__end__"
+    }
+  ],
+  "edges": [
+    {
+      "source": "__start__",
+      "target": "welcome"
+    },
+    {
+      "source": "dispatch",
+      "target": "ingestion",
+      "conditional": true
+    },
+    {
+      "source": "dispatch",
+      "target": "quiz",
+      "conditional": true
+    },
+    {
+      "source": "dispatch",
+      "target": "respond",
+      "data": "coordinator",
+      "conditional": true
+    },
+    {
+      "source": "dispatch",
+      "target": "structure",
+      "conditional": true
+    },
+    {
+      "source": "dispatch",
+      "target": "validation",
+      "conditional": true
+    },
+    {
+      "source": "ingestion",
+      "target": "respond"
+    },
+    {
+      "source": "intake",
+      "target": "route_action"
+    },
+    {
+      "source": "quiz",
+      "target": "respond"
+    },
+    {
+      "source": "respond",
+      "target": "__end__",
+      "data": "end",
+      "conditional": true
+    },
+    {
+      "source": "respond",
+      "target": "end_turn",
+      "data": "continue",
+      "conditional": true
+    },
+    {
+      "source": "route_action",
+      "target": "dispatch",
+      "conditional": true
+    },
+    {
+      "source": "route_action",
+      "target": "end_turn",
+      "conditional": true
+    },
+    {
+      "source": "route_action",
+      "target": "finalize",
+      "conditional": true
+    },
+    {
+      "source": "structure",
+      "target": "respond"
+    },
+    {
+      "source": "validation",
+      "target": "respond"
+    },
+    {
+      "source": "welcome",
+      "target": "intake"
+    },
+    {
+      "source": "end_turn",
+      "target": "__end__"
+    },
+    {
+      "source": "finalize",
+      "target": "__end__"
+    }
+  ]
+}

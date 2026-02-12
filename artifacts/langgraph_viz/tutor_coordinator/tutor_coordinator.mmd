@@ -1,0 +1,36 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	welcome(welcome)
+	intake(intake)
+	explainer(explainer)
+	gap_analysis(gap_analysis)
+	quiz(quiz)
+	grade_quiz(grade_quiz)
+	summarize(summarize)
+	end_turn(end_turn)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> welcome;
+	explainer -.-> intake;
+	explainer -.-> quiz;
+	gap_analysis --> intake;
+	grade_quiz -.-> intake;
+	grade_quiz -.-> quiz;
+	intake -.-> end_turn;
+	intake -.-> explainer;
+	intake -.-> gap_analysis;
+	intake -.-> grade_quiz;
+	intake -.-> quiz;
+	intake -.-> summarize;
+	quiz -.-> intake;
+	welcome --> intake;
+	end_turn --> __end__;
+	summarize --> __end__;
+	quiz -.-> quiz;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc

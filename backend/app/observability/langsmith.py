@@ -25,10 +25,14 @@ def initialize_langsmith(settings: Settings) -> bool:
 
     if settings.LANGSMITH_API_KEY:
         os.environ["LANGSMITH_API_KEY"] = settings.LANGSMITH_API_KEY
+        # Backward-compatible env names used by some LangChain integrations.
+        os.environ["LANGCHAIN_API_KEY"] = settings.LANGSMITH_API_KEY
     if settings.LANGSMITH_ENDPOINT:
         os.environ["LANGSMITH_ENDPOINT"] = settings.LANGSMITH_ENDPOINT
+        os.environ["LANGCHAIN_ENDPOINT"] = settings.LANGSMITH_ENDPOINT
     if settings.LANGSMITH_PROJECT:
         os.environ["LANGSMITH_PROJECT"] = settings.LANGSMITH_PROJECT
+        os.environ["LANGCHAIN_PROJECT"] = settings.LANGSMITH_PROJECT
     if settings.LANGSMITH_WORKSPACE_ID:
         os.environ["LANGSMITH_WORKSPACE_ID"] = settings.LANGSMITH_WORKSPACE_ID
 
@@ -69,4 +73,3 @@ def build_trace_config(
         config["metadata"] = existing_metadata
 
     return config
-

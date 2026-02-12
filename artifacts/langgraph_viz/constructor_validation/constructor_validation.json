@@ -1,0 +1,111 @@
+{
+  "nodes": [
+    {
+      "id": "__start__",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "__start__"
+      }
+    },
+    {
+      "id": "validate_content",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "validate_content"
+      }
+    },
+    {
+      "id": "validate_structure",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "validate_structure"
+      }
+    },
+    {
+      "id": "validate_quiz",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "validate_quiz"
+      }
+    },
+    {
+      "id": "calculate_readiness",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "calculate_readiness"
+      }
+    },
+    {
+      "id": "generate_report",
+      "type": "runnable",
+      "data": {
+        "id": [
+          "langgraph",
+          "_internal",
+          "_runnable",
+          "RunnableCallable"
+        ],
+        "name": "generate_report"
+      }
+    },
+    {
+      "id": "__end__"
+    }
+  ],
+  "edges": [
+    {
+      "source": "__start__",
+      "target": "validate_content"
+    },
+    {
+      "source": "calculate_readiness",
+      "target": "generate_report"
+    },
+    {
+      "source": "validate_content",
+      "target": "validate_structure"
+    },
+    {
+      "source": "validate_quiz",
+      "target": "calculate_readiness"
+    },
+    {
+      "source": "validate_structure",
+      "target": "validate_quiz"
+    },
+    {
+      "source": "generate_report",
+      "target": "__end__"
+    }
+  ]
+}
