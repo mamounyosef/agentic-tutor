@@ -1,338 +1,361 @@
-# Agentic Tutor
+﻿# Agentic Tutor
 
-> Agent-based learning system that ingests existing course materials and uses coordinated AI agents to plan, retrieve, and adapt study sessions, tracking learner progress and autonomously selecting the most relevant content and activities.
+> A dual-workflow learning platform powered by LangGraph multi-agent orchestration: creators build courses from raw materials, and students learn through adaptive, personalized tutoring sessions.
 
 ![Version](https://img.shields.io/badge/version-0.1.0-blue)
 ![Python](https://img.shields.io/badge/python-3.11+-blue)
 ![Node](https://img.shields.io/badge/node-18+-green)
-![License](https://img.shields.io/badge/license-MIT-green)
+![License](https://img.shields.io/badge/license-Apache%202.0-green)
 
 ## Table of Contents
 
 - [Overview](#overview)
+- [Core Workflows](#core-workflows)
 - [Architecture](#architecture)
-- [Features](#features)
 - [Tech Stack](#tech-stack)
-- [Quick Start](#quick-start)
-- [Development Setup](#development-setup)
-- [Docker Deployment](#docker-deployment)
-- [Testing](#testing)
-- [Project Structure](#project-structure)
+- [Repository Layout](#repository-layout)
+- [Local Setup](#local-setup)
 - [Environment Variables](#environment-variables)
-- [API Documentation](#api-documentation)
-- [Contributing](#contributing)
+- [API Summary](#api-summary)
+- [LangSmith Tracing](#langsmith-tracing)
+- [Workflow Visualization](#workflow-visualization)
+- [Docker](#docker)
+- [Troubleshooting](#troubleshooting)
+- [License](#license)
 
 ## Overview
 
-Agentic Tutor is a two-sided AI-powered learning platform with completely separate workflows:
+Agentic Tutor is built around two separate but connected experiences:
 
-1. **Constructor Workflow** - Course creators interact with AI agents to build courses from raw materials (PDFs, PPTs, videos)
-2. **Tutor Workflow** - Students interact with AI agents for adaptive, personalized learning sessions
+1. **Constructor Workflow (Creator Side)**
+   - Ingests creator materials (PDF, PPT/PPTX, DOCX, TXT, video).
+   - Builds course structure (units/topics), generates quizzes, validates readiness.
+   - Supports streaming coordination via WebSocket.
 
-### Key Differentiators
+2. **Tutor Workflow (Student Side)**
+   - Provides interactive tutoring sessions with dynamic routing (explain, quiz, summarize, etc.).
+   - Tracks mastery and supports progress-aware study loops.
+   - Uses streaming responses via WebSocket with HTTP fallback.
 
-- **Separate User Systems**: Creators and students have completely isolated authentication and databases
-- **Multi-Agent Orchestration**: Each workflow uses coordinated AI agents with specialized roles
-- **Adaptive Learning**: The tutor system tracks mastery and personalizes content delivery
-- **Real-time Streaming**: Token-by-token response streaming for natural conversation flow
+Both workflows are modeled as **LangGraph graphs** with checkpointed session state and explicit node-level orchestration.
+
+## Core Workflows
+
+### Constructor (Creator)
+
+Top-level coordinator routes across sub-agents:
+
+- **Coordinator nodes:** `welcome`, `intake`, `route_action`, `dispatch`, `respond`, `finalize`, `end_turn`
+- **Sub-agents:**
+  - Ingestion graph
+  - Structure graph
+  - Quiz generation graph
+  - Validation graph
+
+Detailed workflow documentation lives in `WORKFLOWS.md`.
+
+### Tutor (Student)
+
+Tutor coordinator nodes include:
+
+- `welcome`, `intake`, `explainer`, `gap_analysis`, `quiz`, `grade_quiz`, `summarize`, `end_turn`
+
+Routing is conditional and state-aware, enabling adaptive instructional turns.
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         AGENTIC TUTOR SYSTEM                                │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  ┌─────────────────────────────────────┐  ┌───────────────────────────────┐ │
-│  │      CONSTRUCTOR WORKFLOW           │  │       TUTOR WORKFLOW          │ │
-│  │     (Course Creation)               │  │     (Student Learning)        │ │
-│  │                                     │  │                               │ │
-│  │  Course Creator                     │  │  Student                      │ │
-│  │  Coordinator Agent                  │  │  Session Coordinator          │ │
-│  │  Ingestion Agent                    │  │  Explainer Agent              │ │
-│  │  Structure Analysis Agent           │  │  Assessment Agent             │ │
-│  │  Quiz Generation Agent              │  │  Gap Analysis Agent           │ │
-│  │  Validation Agent                   │  │  LangGraph Checkpointer       │ │
-│  │  LangGraph Checkpointer             │  │  Tutor Tool Layer             │ │
-│  │  Constructor Tool Layer             │  │                               │ │
-│  │  Course Vector DB                   │  │  Course Vector DB (Read Only) │ │
-│  │  Course MySQL DB                    │  │  Course MySQL DB (Read Only)  │ │
-│  │                                     │  │  Student Vector DB            │ │
-│  │                                     │  │  Student MySQL DB             │ │
-│  └─────────────────────────────────────┘  └───────────────────────────────┘ │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
+```text
+Frontend (Next.js)
+  -> REST + WebSocket
+Backend (FastAPI)
+  -> Auth API
+  -> Constructor API + WebSocket
+  -> Tutor API + WebSocket
+  -> LangGraph Workflows (Constructor + Tutor)
+  -> SQLAlchemy (Constructor DB, Tutor DB)
+  -> Chroma Vector Stores
+  -> Optional LangSmith tracing
 ```
 
-## Features
-
-### For Course Creators (Constructor Workflow)
-- **AI-Powered Course Construction**: Upload materials and let AI agents structure your course
-- **Multi-Format Support**: PDFs, PowerPoint presentations, videos (with transcription)
-- **Automatic Topic Detection**: AI analyzes content and identifies learning topics
-- **Prerequisite Mapping**: Automatically identifies relationships between topics
-- **Quiz Generation**: AI creates questions from your content
-- **Quality Validation**: Built-in validation agent ensures course completeness
-
-### For Students (Tutor Workflow)
-- **Adaptive Learning Sessions**: AI tutors adapt to your learning pace and style
-- **Knowledge Gap Analysis**: Identifies areas where you need more practice
-- **Mastery Tracking**: Per-topic progress tracking with spaced repetition
-- **Interactive Quizzes**: Real-time quiz generation during sessions
-- **Personalized Explanations**: RAG-based explanations tailored to your level
-- **Progress Analytics**: Detailed reports on your learning journey
+Data boundaries are separated between creator and student domains while enabling published course consumption by tutor flows.
 
 ## Tech Stack
 
 ### Backend
-| Component | Technology |
-|-----------|------------|
-| Framework | FastAPI |
-| AI Agents | LangChain + LangGraph |
-| LLM Provider | Z.AI (OpenAI-compatible) |
-| Databases | MySQL (separate DBs) |
-| Vector Stores | ChromaDB |
-| Authentication | JWT |
-| File Processing | PyPDF2, python-pptx, faster-whisper |
+
+- Python 3.11+
+- FastAPI
+- LangChain + LangGraph
+- SQLAlchemy + MySQL
+- ChromaDB
+- JWT auth
+- File ingestion stack: PDF/PPT/DOCX/text/video tooling
 
 ### Frontend
-| Component | Technology |
-|-----------|------------|
-| Framework | Next.js 14 (App Router) |
-| UI Library | shadcn/ui (Radix UI) |
-| Styling | Tailwind CSS |
-| State | Zustand |
-| Forms | React Hook Form + Zod |
-| Notifications | Sonner |
-| Real-time | WebSocket |
 
-## Quick Start
+- Next.js 14 (App Router)
+- React 18
+- TypeScript
+- Tailwind CSS
+- Zustand
+- WebSocket client streaming
 
-### Prerequisites
+## Repository Layout
+
+```text
+agentic-tutor/
+|-- backend/
+|   |-- app/
+|   |   |-- agents/
+|   |   |   |-- constructor/
+|   |   |   `-- tutor/
+|   |   |-- api/
+|   |   |-- core/
+|   |   |-- db/
+|   |   |-- observability/
+|   |   `-- vector/
+|   |-- db/
+|   |   |-- constructor/schema.sql
+|   |   `-- tutor/schema.sql
+|   `-- requirements.txt
+|-- frontend/
+|-- scripts/
+|   |-- setup.ps1
+|   |-- setup.sh
+|   |-- visualize_langgraphs.py
+|   `-- visualize_langgraphs_combined.py
+|-- artifacts/langgraph_viz/
+|-- WORKFLOWS.md
+|-- docker-compose.yml
+`-- .env.example
+```
+
+## Local Setup
+
+### 1. Prerequisites
 
 - Python 3.11+
 - Node.js 18+
-- MySQL 8.0+
-- Z.AI API key (or compatible LLM provider)
+- MySQL 8+
+- An OpenAI-compatible LLM endpoint (local or remote)
 
-### Using Setup Scripts
+### 2. Clone
 
-**Linux/Mac:**
 ```bash
-chmod +x scripts/setup.sh
-./scripts/setup.sh
-```
-
-**Windows:**
-```powershell
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-.\scripts\setup.ps1
-```
-
-### Manual Setup
-
-1. **Clone the repository**
-```bash
-git clone https://github.com/yourusername/agentic-tutor.git
+git clone https://github.com/mamounyosef/agentic-tutor.git
 cd agentic-tutor
 ```
 
-2. **Configure environment**
+### 3. Configure Environment
+
+Create env files:
+
 ```bash
 cp .env.example .env
-# Edit .env with your database credentials and API keys
+cp .env.example backend/.env
 ```
 
-3. **Set up databases**
+Important note:
+
+- Backend settings load from `.env` in the backend working directory when you run backend commands from `backend/`.
+- In practice, keep `backend/.env` updated for backend runtime.
+
+### 4. Initialize Databases
+
 ```bash
 mysql -u root -p < backend/db/constructor/schema.sql
 mysql -u root -p < backend/db/tutor/schema.sql
 ```
 
-4. **Install backend dependencies**
-```bash
+### 5. Run Backend
+
+From terminal 1:
+
+```powershell
 cd backend
 python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-pip install -e .
+.\venv\Scripts\activate
+pip install -r requirements.txt
+python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-5. **Install frontend dependencies**
-```bash
+### 6. Run Frontend
+
+From terminal 2:
+
+```powershell
 cd frontend
 npm install
-```
-
-## Development Setup
-
-### Start Backend
-
-```bash
-cd backend
-source venv/bin/activate
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-```
-
-Backend API will be available at `http://localhost:8000`
-
-### Start Frontend
-
-```bash
-cd frontend
 npm run dev
 ```
 
-Frontend will be available at `http://localhost:3000`
+### 7. Access
 
-### Access the Application
-
-- **Creator Login**: http://localhost:3000/auth/login (select Creator tab)
-- **Student Login**: http://localhost:3000/auth/login (select Student tab)
-- **API Docs**: http://localhost:8000/docs
-
-## Docker Deployment
-
-### Using Docker Compose (Recommended)
-
-```bash
-# Start all services
-docker-compose up -d
-
-# View logs
-docker-compose logs -f
-
-# Stop services
-docker-compose down
-```
-
-Services included:
-- `constructor-db` - MySQL database for Constructor workflow (port 3307)
-- `tutor-db` - MySQL database for Tutor workflow (port 3308)
-- `backend` - FastAPI backend (port 8000)
-- `frontend` - Next.js frontend (port 3000)
-
-## Testing
-
-### Run Backend Tests
-
-```bash
-cd backend
-pytest tests/ -v
-```
-
-### Run with Coverage
-
-```bash
-pytest tests/ --cov=app --cov-report=html
-```
-
-### Run Frontend Tests
-
-```bash
-cd frontend
-npm test
-```
-
-### Test Endpoints
-
-```bash
-# Health check
-curl http://localhost:8000/health
-
-# Constructor endpoints
-curl -X POST http://localhost:8000/api/v1/auth/constructor/register \
-  -H "Content-Type: application/json" \
-  -d '{"email":"test@example.com","password":"test123","full_name":"Test Creator"}'
-
-# Tutor endpoints
-curl -X POST http://localhost:8000/api/v1/auth/student/register \
-  -H "Content-Type: application/json" \
-  -d '{"email":"student@example.com","password":"test123","full_name":"Test Student"}'
-```
-
-## Project Structure
-
-```
-agentic-tutor/
-├── backend/
-│   ├── app/
-│   │   ├── agents/              # AI agents (Constructor & Tutor)
-│   │   │   ├── base/            # Base agent classes
-│   │   │   ├── constructor/     # Constructor workflow agents
-│   │   │   └── tutor/           # Tutor workflow agents
-│   │   ├── api/                 # API endpoints
-│   │   ├── core/                # Core utilities
-│   │   ├── db/                  # Database models
-│   │   ├── vector/              # Vector store wrappers
-│   │   └── main.py              # FastAPI application
-│   ├── tests/                   # Integration tests
-│   ├── data/                    # Data directories
-│   └── checkpoints/             # LangGraph checkpoints
-├── frontend/
-│   ├── app/                     # Next.js pages
-│   ├── components/              # React components
-│   └── lib/                     # Utilities
-├── scripts/                     # Setup scripts
-├── docker-compose.yml           # Docker orchestration
-└── .env.example                 # Environment template
-```
+- Frontend: `http://localhost:3000`
+- Backend API: `http://localhost:8000`
+- Swagger: `http://localhost:8000/docs`
+- ReDoc: `http://localhost:8000/redoc`
 
 ## Environment Variables
 
-Key environment variables (see `.env.example` for complete list):
+See `.env.example` for full config. Key values:
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `CONSTRUCTOR_DB_URL` | MySQL connection string for Constructor DB | - |
-| `TUTOR_DB_URL` | MySQL connection string for Tutor DB | - |
-| `LLM_BASE_URL` | LLM API base URL | https://api.z.ai/api/paas/v4/ |
-| `LLM_API_KEY` | LLM API key | - |
-| `SECRET_KEY` | JWT signing key | - |
-| `CORS_ORIGINS` | Allowed CORS origins | http://localhost:3000 |
+### Core
 
-## API Documentation
+- `APP_NAME`, `APP_ENV`, `DEBUG`
+- `SECRET_KEY`, `ALGORITHM`, `ACCESS_TOKEN_EXPIRE_MINUTES`
+- `CORS_ORIGINS`
 
-Once the backend is running, visit:
-- **Swagger UI**: http://localhost:8000/docs
-- **ReDoc**: http://localhost:8000/redoc
+### Databases
 
-### Key Endpoints
+- `CONSTRUCTOR_DB_URL`
+- `TUTOR_DB_URL`
 
-**Constructor API:**
-- `POST /api/v1/constructor/session/start` - Start building a course
-- `POST /api/v1/constructor/session/upload` - Upload course materials
-- `GET /api/v1/constructor/courses` - List creator's courses
+### LLM + Embeddings
 
-**Tutor API:**
-- `GET /api/v1/tutor/courses` - List available courses
-- `POST /api/v1/tutor/enroll` - Enroll in a course
-- `POST /api/v1/tutor/session/start` - Start a learning session
+- `LLM_BASE_URL`
+- `LLM_API_KEY`
+- `LLM_MODEL`
+- `LLM_TEMPERATURE`
+- `LLM_MAX_TOKENS`
+- `EMBEDDINGS_BASE_URL`
+- `EMBEDDINGS_API_KEY`
+- `EMBEDDINGS_MODEL`
 
-**WebSocket:**
-- `WS /api/v1/constructor/session/ws/{session_id}` - Constructor session streaming
-- `WS /api/v1/tutor/session/ws/{session_id}` - Tutor session streaming
+### Transcription
 
-## Contributing
+- `TRANSCRIPTION_SERVICE`
+- `TRANSCRIPTION_MODEL_SIZE`
+- `TRANSCRIPTION_DEVICE`
+- `TRANSCRIPTION_COMPUTE_TYPE`
 
-Contributions are welcome! Please follow these steps:
+### LangSmith
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+- `LANGSMITH_TRACING`
+- `LANGSMITH_API_KEY`
+- `LANGSMITH_ENDPOINT`
+- `LANGSMITH_PROJECT`
+- `LANGSMITH_WORKSPACE_ID`
+
+## API Summary
+
+All endpoints are under `/api/v1`.
+
+### Auth
+
+- `POST /auth/creator/register`
+- `POST /auth/creator/login`
+- `GET /auth/creator/me`
+- `POST /auth/student/register`
+- `POST /auth/student/login`
+- `GET /auth/student/me`
+
+### Constructor
+
+- `POST /constructor/session/start`
+- `POST /constructor/session/chat`
+- `POST /constructor/session/upload`
+- `GET /constructor/session/status/{session_id}`
+- `POST /constructor/course/finalize`
+- `GET /constructor/courses`
+- `GET /constructor/course/{course_id}`
+- `WS /constructor/session/ws/{session_id}`
+
+### Tutor
+
+- `GET /tutor/courses`
+- `GET /tutor/course/{course_id}`
+- `POST /tutor/enroll`
+- `POST /tutor/session/start`
+- `POST /tutor/session/chat`
+- `GET /tutor/session/{session_id}`
+- `POST /tutor/session/end`
+- `GET /tutor/student/{student_id}/progress/{course_id}`
+- `GET /tutor/student/{student_id}/mastery`
+- `GET /tutor/student/{student_id}/gaps`
+- `POST /tutor/quiz/answer`
+- `GET /tutor/course/{course_id}/quiz/question`
+- `WS /tutor/session/ws/{session_id}`
+
+## LangSmith Tracing
+
+Tracing is integrated and fail-open.
+
+To enable:
+
+1. Set in `backend/.env`:
+   - `LANGSMITH_TRACING=true`
+   - `LANGSMITH_API_KEY=...`
+   - `LANGSMITH_PROJECT=agentic-tutor`
+2. Restart backend.
+
+If traces are missing, verify backend is using `backend/.env` and the API key is valid.
+
+## Workflow Visualization
+
+Two scripts are provided:
+
+### 1. Per-workflow exports
+
+```powershell
+backend\venv\Scripts\python scripts\visualize_langgraphs.py --png
+```
+
+Outputs to `artifacts/langgraph_viz/`:
+
+- Mermaid (`.mmd`)
+- JSON (`.json`)
+- PNG (`.png`)
+- Export index (`README.md`, `summary.json`)
+
+### 2. Combined workflow mega-diagram
+
+```powershell
+backend\venv\Scripts\python scripts\visualize_langgraphs_combined.py --png
+```
+
+Outputs:
+
+- `artifacts/langgraph_viz/combined/all_workflows.mmd`
+- `artifacts/langgraph_viz/combined/all_workflows.json`
+- `artifacts/langgraph_viz/combined/all_workflows.png`
+
+## Docker
+
+Docker files and `docker-compose.yml` are included for containerized runs.
+
+Quick start:
+
+```bash
+docker-compose up -d
+docker-compose logs -f
+docker-compose down
+```
+
+For local debugging and workflow iteration, running backend/frontend directly in two terminals is still recommended.
+
+## Troubleshooting
+
+### WebSocket fallback appears in UI
+
+- Confirm backend is reachable at `http://localhost:8000`.
+- Confirm frontend env (`NEXT_PUBLIC_API_URL` / `NEXT_PUBLIC_WS_URL`) points to the backend.
+
+### No LangSmith traces
+
+- Confirm `LANGSMITH_TRACING=true` and valid `LANGSMITH_API_KEY` in `backend/.env`.
+- Restart backend after env changes.
+
+### LLM connection errors
+
+- Check `LLM_BASE_URL` and model availability.
+- For local servers, verify model is loaded before chat/session starts.
+
+### Large video ingestion issues
+
+- Try shorter clips or lower transcription model size.
+- Ensure ffmpeg and transcription dependencies are installed.
 
 ## License
 
-This project is licensed under the MIT License.
-
-## Acknowledgments
-
-- Built with [FastAPI](https://fastapi.tiangolo.com/)
-- AI agents powered by [LangChain](https://langchain.com/) and [LangGraph](https://github.com/langchain-ai/langgraph)
-- UI components from [shadcn/ui](https://ui.shadcn.com/)
-- LLM provider: [Z.AI](https://api.z.ai/)
-
----
-
-Made with ❤️ for AI-powered education
+Licensed under the **Apache License 2.0**. See `LICENSE`.
