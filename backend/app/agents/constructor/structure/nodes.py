@@ -11,7 +11,6 @@ Each node represents a step in the structure analysis workflow:
 8. finalize_structure - Create final structure and save
 """
 
-import json
 import logging
 from typing import Any, Dict, List
 
@@ -36,6 +35,57 @@ from .state import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _fallback_topics_from_chunks(
+    content_chunks: List[Dict[str, Any]],
+    course_title: str,
+) -> List[DetectedTopic]:
+    """Build minimal topics when LLM topic detection returns no usable output."""
+    topics: List[DetectedTopic] = []
+
+    if content_chunks:
+        preview_chunks = content_chunks[:3]
+        for i, chunk in enumerate(preview_chunks):
+            text = str(chunk.get("text", "")).strip()
+            if not text:
+                continue
+
+            lines = [line.strip() for line in text.splitlines() if line.strip()]
+            heading = lines[0] if lines else f"Topic {i + 1}"
+            heading = " ".join(heading.split())[:80]
+            if len(heading) < 4:
+                heading = f"Topic {i + 1}"
+
+            topic_title = heading if heading.lower() != "introduction" else "Course Introduction"
+            summary = " ".join(text.split())[:240]
+
+            topics.append(
+                DetectedTopic(
+                    title=topic_title,
+                    description=summary or f"Core ideas from uploaded content section {i + 1}.",
+                    key_concepts=[],
+                    source_chunk_ids=[str(chunk.get("chunk_id", f"chunk_{i}"))],
+                    summary=summary,
+                    unit_index=0,
+                    order_index=i,
+                )
+            )
+
+    if not topics:
+        topics.append(
+            DetectedTopic(
+                title="Course Overview",
+                description=f"Foundational overview for {course_title or 'the course'}.",
+                key_concepts=[],
+                source_chunk_ids=[],
+                summary="Generated fallback topic because automated topic detection returned no topics.",
+                unit_index=0,
+                order_index=0,
+            )
+        )
+
+    return topics
 
 
 async def analyze_content_node(state: StructureState) -> Dict[str, Any]:
@@ -78,36 +128,58 @@ async def detect_topics_node(state: StructureState) -> Dict[str, Any]:
         "course_title": course_title,
     })
 
+    warnings = list(state.get("warnings", []))
     if not result.get("success"):
+        detected_topics = _fallback_topics_from_chunks(content_chunks, course_title)
+        warnings.append(
+            f"Topic detection failed; used deterministic fallback topics ({result.get('error', 'unknown error')})."
+        )
         return {
-            "errors": [result.get("error", "Failed to detect topics")],
-            "phase": "detect_topics",
+            "detected_topics": detected_topics,
+            "total_topics": len(detected_topics),
+            "confidence_scores": {topic["title"]: 0.55 for topic in detected_topics},
+            "warnings": warnings,
+            "phase": "organize_units",
         }
 
     topics_data = result.get("topics", [])
     detected_topics: List[DetectedTopic] = []
 
     for i, topic_data in enumerate(topics_data):
-        detected_topics.append(DetectedTopic(
-            title=topic_data.get("title", f"Topic {i+1}"),
-            description=topic_data.get("description", ""),
-            key_concepts=topic_data.get("key_concepts", []),
-            source_chunk_ids=topic_data.get("source_chunk_ids", []),
-            summary=None,
-            unit_index=None,
-            order_index=i,
-        ))
+        title = str(topic_data.get("title", "")).strip()
+        if not title:
+            continue
+        detected_topics.append(
+            DetectedTopic(
+                title=title,
+                description=str(topic_data.get("description", "")).strip(),
+                key_concepts=topic_data.get("key_concepts", []),
+                source_chunk_ids=topic_data.get("source_chunk_ids", []),
+                summary=None,
+                unit_index=None,
+                order_index=i,
+            )
+        )
+
+    if not detected_topics:
+        detected_topics = _fallback_topics_from_chunks(content_chunks, course_title)
+        warnings.append(
+            "Topic detection returned no structured output; used deterministic fallback topic extraction."
+        )
 
     # Calculate confidence scores (simplified - could be enhanced)
-    confidence_scores = {
-        topic["title"]: topic.get("confidence", 0.8)
-        for topic in topics_data
-    }
+    confidence_scores = {}
+    for idx, topic in enumerate(topics_data):
+        title = str(topic.get("title", "")).strip() or f"Topic {idx + 1}"
+        confidence_scores[title] = float(topic.get("confidence", 0.8))
+    for topic in detected_topics:
+        confidence_scores.setdefault(topic["title"], 0.6)
 
     return {
         "detected_topics": detected_topics,
         "total_topics": len(detected_topics),
         "confidence_scores": confidence_scores,
+        "warnings": warnings,
         "phase": "organize_units",
     }
 
@@ -144,13 +216,37 @@ async def group_into_units_node(state: StructureState) -> Dict[str, Any]:
     })
 
     if not result.get("success"):
-        return {
-            "errors": [result.get("error", "Failed to organize units")],
-            "phase": "organize_units",
+        result = {
+            "success": True,
+            "units": [
+                {
+                    "unit_title": "Core Concepts",
+                    "unit_description": "Primary concepts extracted from uploaded material.",
+                    "topic_titles": [t.get("title", "") for t in detected_topics if t.get("title")],
+                }
+            ],
         }
+        warnings = list(state.get("warnings", []))
+        warnings.append(
+            f"Unit organization failed; used single-unit fallback ({result.get('error', 'unknown error')})."
+        )
+    else:
+        warnings = list(state.get("warnings", []))
 
     units_data = result.get("units", [])
     detected_units: List[DetectedUnit] = []
+
+    if not units_data:
+        units_data = [
+            {
+                "unit_title": "Core Concepts",
+                "unit_description": "Primary concepts extracted from uploaded material.",
+                "topic_titles": [t.get("title", "") for t in detected_topics if t.get("title")],
+            }
+        ]
+        warnings.append(
+            "Unit organization returned no structured output; used single-unit fallback organization."
+        )
 
     for i, unit_data in enumerate(units_data):
         detected_units.append(DetectedUnit(
@@ -172,19 +268,35 @@ async def group_into_units_node(state: StructureState) -> Dict[str, Any]:
             for topic in detected_topics:
                 if topic.get("title") == topic_title:
                     # Update topic with unit info
-                    updated_topic = DetectedTopic(
-                        **topic,
-                        unit_index=unit.get("order_index"),
-                    )
+                    updated_topic_dict = dict(topic)
+                    updated_topic_dict["unit_index"] = unit.get("order_index")
+                    updated_topic = DetectedTopic(**updated_topic_dict)
                     organized_topics.append(updated_topic)
                     topics_by_unit[unit_title].append(updated_topic)
                     break
+
+    # If LLM unit mapping produced no exact title matches, assign all topics to first unit.
+    if not organized_topics and detected_topics and detected_units:
+        first_unit = detected_units[0]
+        first_unit_title = first_unit["title"]
+        topics_by_unit[first_unit_title] = []
+        for idx, topic in enumerate(detected_topics):
+            updated_topic_dict = dict(topic)
+            updated_topic_dict["unit_index"] = first_unit.get("order_index", 0)
+            updated_topic_dict["order_index"] = idx
+            updated_topic = DetectedTopic(**updated_topic_dict)
+            organized_topics.append(updated_topic)
+            topics_by_unit[first_unit_title].append(updated_topic)
+        warnings.append(
+            "Unit/topic title mapping was inconsistent; assigned all detected topics to the first unit."
+        )
 
     return {
         "detected_units": detected_units,
         "total_units": len(detected_units),
         "topics_by_unit": topics_by_unit,
         "detected_topics": organized_topics,
+        "warnings": warnings,
         "phase": "identify_prerequisites",
     }
 

@@ -434,6 +434,12 @@ async def finalize_quiz_bank_node(state: QuizGenState) -> Dict[str, Any]:
 
     # Convert to QuizQuestionInfo format for database
     quiz_questions_for_db: List[QuizQuestionInfo] = []
+    mapping_errors: List[str] = []
+    topic_id_by_title = {
+        str(topic_result.get("topic_title", "")).strip().lower(): topic_result.get("topic_id")
+        for topic_result in topic_quizzes
+        if str(topic_result.get("topic_title", "")).strip()
+    }
 
     for question in all_questions:
         # Convert options format for MCQ
@@ -441,9 +447,20 @@ async def finalize_quiz_bank_node(state: QuizGenState) -> Dict[str, Any]:
         if question.get("question_type") == "multiple_choice":
             options = question.get("options", [])
 
+        resolved_topic_id = question.get("topic_id")
+        if resolved_topic_id is None:
+            topic_title_key = str(question.get("topic_title", "")).strip().lower()
+            resolved_topic_id = topic_id_by_title.get(topic_title_key)
+
+        if resolved_topic_id is None:
+            mapping_errors.append(
+                f"Could not map topic_id for quiz question: {question.get('question_text', '')[:80]}"
+            )
+            continue
+
         quiz_questions_for_db.append(QuizQuestionInfo(
             id=None,
-            topic_id=None,  # Will be mapped after DB insert
+            topic_id=int(resolved_topic_id),
             question_text=question.get("question_text", ""),
             question_type=question.get("question_type", ""),
             options=options,
@@ -474,6 +491,7 @@ async def finalize_quiz_bank_node(state: QuizGenState) -> Dict[str, Any]:
         "total_questions_generated": total_questions,
         "phase": "complete",
         "generation_complete": True,
+        "errors": [*state.get("errors", []), *mapping_errors],
     }
 
 
