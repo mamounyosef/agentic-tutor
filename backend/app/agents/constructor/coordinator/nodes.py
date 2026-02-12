@@ -590,7 +590,8 @@ def _determine_default_action(state: ConstructorState) -> str:
     if processed_files and not topics:
         # Avoid infinite analyze -> no-topics -> analyze loops when structure
         # already completed but couldn't derive topics from current materials.
-        if structure_completed:
+        # Allow an explicit user-triggered retry (e.g., "create the course now").
+        if structure_completed and not _should_retry_structure(state):
             return "respond"
         return "analyze_structure"
 
@@ -700,8 +701,25 @@ def _deterministic_coordinator_reply(state: ConstructorState) -> str:
             return "Great. I have your course basics and uploaded materials. I will continue with ingestion and then build structure, quizzes, and validation."
         return "Great. Your files are already processed, so I will proceed with structure analysis, quiz generation, and validation."
 
-    if asks_status and uploaded_files and len(processed_files) < len(uploaded_files):
-        return "I am still processing uploaded materials. Once processing finishes, I will continue with structure analysis and quiz generation."
+    if asks_status:
+        if uploaded_files and len(processed_files) < len(uploaded_files):
+            return "I am still processing uploaded materials. Once processing finishes, I will continue with structure analysis and quiz generation."
+
+        next_action = _determine_default_action(state)
+        action_to_status = {
+            "collect_info": "waiting for course basics",
+            "request_files": "waiting for course materials upload",
+            "process_files": "ingesting uploaded files",
+            "analyze_structure": "analyzing course structure",
+            "generate_quizzes": "generating quiz bank",
+            "validate_course": "running course validation",
+            "finalize": "finalizing course publication",
+            "respond": "waiting for your next instruction",
+        }
+        return (
+            f"Current status: {action_to_status.get(next_action, 'in progress')}. "
+            f"Progress is {int(float(state.get('progress', 0.0)) * 100)}%."
+        )
 
     return ""
 
@@ -720,6 +738,25 @@ def _looks_like_basics_request(text: str) -> bool:
         and ("description" in lowered or "summary" in lowered or "goal" in lowered)
         and ("difficulty" in lowered or "beginner" in lowered or "intermediate" in lowered or "advanced" in lowered)
     )
+
+
+def _should_retry_structure(state: ConstructorState) -> bool:
+    """Check whether the latest user message explicitly asks to continue/build."""
+    messages = state.get("messages", [])
+    user_messages = [message_content(m).strip().lower() for m in messages if message_role(m) == "user"]
+    if not user_messages:
+        return False
+    last_user = user_messages[-1]
+    retry_phrases = (
+        "create the course",
+        "build the course",
+        "proceed",
+        "continue",
+        "go ahead",
+        "analyze",
+        "retry",
+    )
+    return any(phrase in last_user for phrase in retry_phrases)
 
 
 # =============================================================================
