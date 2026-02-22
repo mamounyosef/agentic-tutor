@@ -3,9 +3,10 @@
 This module defines SQLAlchemy ORM models for:
 - Creators (course creators)
 - Courses
-- Units
-- Topics
-- Materials
+- Modules (course divisions like weeks/sections)
+- Units (learning units within modules)
+- Topics (learning topics within units)
+- Materials (course content files)
 - Quiz Questions
 - Constructor Sessions
 """
@@ -63,7 +64,7 @@ class Course(Base):
 
     # Relationships
     creator = relationship("Creator", back_populates="courses")
-    units = relationship("Unit", back_populates="course", cascade="all, delete-orphan", order_by="Unit.order_index")
+    modules = relationship("Module", back_populates="course", cascade="all, delete-orphan", order_by="Module.order_index")
     materials = relationship("Material", back_populates="course", cascade="all, delete-orphan")
     quiz_questions = relationship("QuizQuestion", back_populates="course", cascade="all, delete-orphan")
     sessions = relationship("ConstructorSession", back_populates="course", cascade="all, delete-orphan")
@@ -74,23 +75,43 @@ class Course(Base):
     )
 
 
-class Unit(Base):
-    """Course unit model."""
-    __tablename__ = "units"
+class Module(Base):
+    """Course module model (e.g., Week 1, Foundations, Advanced Topics)."""
+    __tablename__ = "modules"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     course_id = Column(Integer, ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True)
     title = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
     order_index = Column(Integer, nullable=False)
+    prerequisites = Column(JSON, nullable=True)  # List of module IDs
+
+    # Relationships
+    course = relationship("Course", back_populates="modules")
+    units = relationship("Unit", back_populates="module", cascade="all, delete-orphan", order_by="Unit.order_index")
+
+    __table_args__ = (
+        UniqueConstraint("course_id", "order_index", name="unique_module_order"),
+    )
+
+
+class Unit(Base):
+    """Learning unit model within a module - content container."""
+    __tablename__ = "units"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    module_id = Column(Integer, ForeignKey("modules.id", ondelete="CASCADE"), nullable=False, index=True)
+    title = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    order_index = Column(Integer, nullable=False)
     prerequisites = Column(JSON, nullable=True)  # List of unit IDs
 
     # Relationships
-    course = relationship("Course", back_populates="units")
+    module = relationship("Module", back_populates="units")
     topics = relationship("Topic", back_populates="unit", cascade="all, delete-orphan", order_by="Topic.order_index")
 
     __table_args__ = (
-        UniqueConstraint("course_id", "order_index", name="unique_unit_order"),
+        UniqueConstraint("module_id", "order_index", name="unique_unit_order"),
     )
 
 
@@ -107,8 +128,6 @@ class Topic(Base):
 
     # Relationships
     unit = relationship("Unit", back_populates="topics")
-    materials = relationship("Material", back_populates="topic", cascade="all, delete-orphan")
-    quiz_questions = relationship("QuizQuestion", back_populates="topic", cascade="all, delete-orphan")
 
     __table_args__ = (
         UniqueConstraint("unit_id", "order_index", name="unique_topic_order"),
@@ -120,7 +139,7 @@ class Material(Base):
     __tablename__ = "materials"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    topic_id = Column(Integer, ForeignKey("topics.id", ondelete="CASCADE"), nullable=False, index=True)
+    unit_id = Column(Integer, ForeignKey("units.id", ondelete="CASCADE"), nullable=False, index=True)
     course_id = Column(Integer, ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True)
     material_type = Column(
         Enum("pdf", "ppt", "pptx", "docx", "video", "text", "other", name="material_type"),
@@ -139,7 +158,7 @@ class Material(Base):
     chunks_count = Column(Integer, default=0)
 
     # Relationships
-    topic = relationship("Topic", back_populates="materials")
+    unit = relationship("Unit")
     course = relationship("Course", back_populates="materials")
 
 
@@ -148,7 +167,7 @@ class QuizQuestion(Base):
     __tablename__ = "quiz_questions"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    topic_id = Column(Integer, ForeignKey("topics.id", ondelete="CASCADE"), nullable=False, index=True)
+    unit_id = Column(Integer, ForeignKey("units.id", ondelete="CASCADE"), nullable=False, index=True)
     course_id = Column(Integer, ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True)
     question_text = Column(Text, nullable=False)
     question_type = Column(
@@ -169,7 +188,7 @@ class QuizQuestion(Base):
     embedding_id = Column(String(255), nullable=True)  # Reference to vector DB
 
     # Relationships
-    topic = relationship("Topic", back_populates="quiz_questions")
+    unit = relationship("Unit")
     course = relationship("Course", back_populates="quiz_questions")
 
 

@@ -1,5 +1,10 @@
-"""Constructor workflow agents and tools."""
+"""Constructor Agent Module using DeepAgents.
 
-from .state import ConstructorState
+This module provides a multi-agent system for course creation using LangChain's
+deepagents framework. The main coordinator agent delegates to specialized
+sub-agents for structure creation, content ingestion, quiz generation, and validation.
+"""
 
-__all__ = ["ConstructorState"]
+from app.agents.constructor.main_agent.agent import main_agent
+
+__all__ = ["main_agent"]

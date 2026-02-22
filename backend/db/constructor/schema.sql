@@ -59,22 +59,40 @@ CREATE TABLE courses (
 COMMENT='Course definitions created by course creators';
 
 -- ==============================================================================
--- UNITS TABLE (Course Modules)
+-- MODULES TABLE (Course Modules - e.g., "Week 1", "Foundations")
 -- ==============================================================================
 
-CREATE TABLE units (
+CREATE TABLE modules (
     id INT AUTO_INCREMENT PRIMARY KEY,
     course_id INT NOT NULL,
     title VARCHAR(255) NOT NULL,
     description TEXT,
     order_index INT NOT NULL,
-    prerequisites JSON DEFAULT NULL COMMENT 'Array of unit IDs that must be completed first',
+    prerequisites JSON DEFAULT NULL COMMENT 'Array of module IDs that must be completed first',
 
     FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE CASCADE,
     UNIQUE KEY unique_order (course_id, order_index),
     INDEX idx_course (course_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-COMMENT='Course units/modules';
+COMMENT='Course modules (major divisions like weeks/sections)';
+
+-- ==============================================================================
+-- UNITS TABLE (Learning Units within Modules - content containers)
+-- ==============================================================================
+
+CREATE TABLE units (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    module_id INT NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    description TEXT,
+    order_index INT NOT NULL,
+    prerequisites JSON DEFAULT NULL COMMENT 'Array of unit IDs that must be completed first',
+
+    FOREIGN KEY (module_id) REFERENCES modules(id) ON DELETE CASCADE,
+    UNIQUE KEY unique_order (module_id, order_index),
+    INDEX idx_module (module_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+COMMENT='Learning units within modules - contain actual content';
 
 -- ==============================================================================
 -- TOPICS TABLE (Learning Topics within Units)
@@ -100,7 +118,7 @@ COMMENT='Learning topics within units';
 
 CREATE TABLE materials (
     id INT AUTO_INCREMENT PRIMARY KEY,
-    topic_id INT NOT NULL,
+    unit_id INT NOT NULL,
     course_id INT NOT NULL,
     material_type ENUM('pdf', 'ppt', 'pptx', 'video', 'text', 'docx', 'other') NOT NULL,
     file_path VARCHAR(512) NOT NULL,
@@ -110,9 +128,9 @@ CREATE TABLE materials (
     processing_status ENUM('pending', 'processing', 'completed', 'error') DEFAULT 'pending',
     chunks_count INT DEFAULT 0,
 
-    FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE CASCADE,
+    FOREIGN KEY (unit_id) REFERENCES units(id) ON DELETE CASCADE,
     FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE CASCADE,
-    INDEX idx_topic (topic_id),
+    INDEX idx_unit (unit_id),
     INDEX idx_course (course_id),
     INDEX idx_type (material_type)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
@@ -124,7 +142,7 @@ COMMENT='Course materials (PDFs, slides, videos, etc.)';
 
 CREATE TABLE quiz_questions (
     id INT AUTO_INCREMENT PRIMARY KEY,
-    topic_id INT NOT NULL,
+    unit_id INT NOT NULL,
     course_id INT NOT NULL,
     question_text TEXT NOT NULL,
     question_type ENUM('multiple_choice', 'true_false', 'short_answer', 'essay') NOT NULL,
@@ -135,9 +153,9 @@ CREATE TABLE quiz_questions (
     course_metadata JSON DEFAULT NULL COMMENT '{"tags": [], "concepts_tested": []}',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
-    FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE CASCADE,
+    FOREIGN KEY (unit_id) REFERENCES units(id) ON DELETE CASCADE,
     FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE CASCADE,
-    INDEX idx_topic (topic_id),
+    INDEX idx_unit (unit_id),
     INDEX idx_course (course_id),
     INDEX idx_difficulty (difficulty)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
@@ -184,6 +202,9 @@ SELECT
 UNION ALL
 SELECT
     'courses', COUNT(*) FROM courses
+UNION ALL
+SELECT
+    'modules', COUNT(*) FROM modules
 UNION ALL
 SELECT
     'units', COUNT(*) FROM units
