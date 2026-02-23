@@ -137,29 +137,61 @@ CREATE TABLE materials (
 COMMENT='Course materials (PDFs, slides, videos, etc.)';
 
 -- ==============================================================================
+-- QUIZZES TABLE (Quiz Containers - groups of questions)
+-- ==============================================================================
+
+CREATE TABLE quizzes (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    unit_id INT NOT NULL,
+    course_id INT NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    description TEXT COMMENT 'What this quiz covers (e.g., "Units 1-2: Python Basics")',
+    order_index INT NOT NULL COMMENT 'Order within the unit (1, 2, 3...)',
+    time_limit_seconds INT DEFAULT NULL COMMENT 'NULL = no time limit',
+    passing_score DECIMAL(5,2) DEFAULT 70.00 COMMENT 'Percentage needed to pass (0-100)',
+    max_attempts INT DEFAULT 3 COMMENT 'Maximum number of attempts allowed',
+    is_published BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (unit_id) REFERENCES units(id) ON DELETE CASCADE,
+    FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE CASCADE,
+    UNIQUE KEY unique_order (unit_id, order_index),
+    INDEX idx_unit (unit_id),
+    INDEX idx_course (course_id),
+    INDEX idx_published (is_published)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+COMMENT='Quiz definitions - containers for quiz questions';
+
+-- ==============================================================================
 -- QUIZ QUESTIONS TABLE
 -- ==============================================================================
 
 CREATE TABLE quiz_questions (
     id INT AUTO_INCREMENT PRIMARY KEY,
-    unit_id INT NOT NULL,
-    course_id INT NOT NULL,
+    quiz_id INT NOT NULL COMMENT 'Links to the quiz this question belongs to',
+    unit_id INT NOT NULL COMMENT 'Denormalized for easier queries',
+    course_id INT NOT NULL COMMENT 'Denormalized for easier queries',
     question_text TEXT NOT NULL,
     question_type ENUM('multiple_choice', 'true_false', 'short_answer', 'essay') NOT NULL,
     options JSON DEFAULT NULL COMMENT 'For multiple choice: [{"text": "Option A", "is_correct": false}]',
     correct_answer TEXT,
     rubric TEXT COMMENT 'Grading criteria for open-ended questions',
     difficulty ENUM('easy', 'medium', 'hard') DEFAULT 'medium',
+    points_value DECIMAL(5,2) DEFAULT 1.00 COMMENT 'Points this question is worth',
+    order_index INT DEFAULT 0 COMMENT 'Order within the quiz',
     course_metadata JSON DEFAULT NULL COMMENT '{"tags": [], "concepts_tested": []}',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
+    FOREIGN KEY (quiz_id) REFERENCES quizzes(id) ON DELETE CASCADE,
     FOREIGN KEY (unit_id) REFERENCES units(id) ON DELETE CASCADE,
     FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE CASCADE,
+    INDEX idx_quiz (quiz_id),
     INDEX idx_unit (unit_id),
     INDEX idx_course (course_id),
     INDEX idx_difficulty (difficulty)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-COMMENT='Quiz questions bank';
+COMMENT='Individual quiz questions linked to quizzes';
 
 -- ==============================================================================
 -- CONSTRUCTOR SESSIONS TABLE (Builder Sessions)
@@ -214,6 +246,9 @@ SELECT
 UNION ALL
 SELECT
     'materials', COUNT(*) FROM materials
+UNION ALL
+SELECT
+    'quizzes', COUNT(*) FROM quizzes
 UNION ALL
 SELECT
     'quiz_questions', COUNT(*) FROM quiz_questions

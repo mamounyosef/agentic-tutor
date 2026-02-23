@@ -9,6 +9,7 @@ from app.agents.constructor.tools.db_tools import (
     save_module,
     save_unit,
     save_material,
+    save_quiz,
     save_quiz_question,
 )
 from app.agents.constructor.tools.ingestion_tools import (
@@ -23,6 +24,7 @@ __all__ = [
     "save_module",
     "save_unit",
     "save_material",
+    "save_quiz",
     "save_quiz_question",
     "extract_text_from_pdf",
     "extract_text_from_slides",

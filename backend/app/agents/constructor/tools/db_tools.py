@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 from langchain_core.tools import tool
 
 from app.db.base import get_constructor_session
-from app.db.constructor.models import Course, Module, Unit, Material, QuizQuestion
+from app.db.constructor.models import Course, Module, Unit, Material, Quiz, QuizQuestion
 
 
 @tool
@@ -222,7 +222,65 @@ def save_material(
 
 
 @tool
+def save_quiz(
+    course_id: int,
+    unit_id: int,
+    title: str,
+    description: Optional[str] = None,
+    order_index: int = 1,
+    time_limit_seconds: Optional[int] = None,
+    passing_score: float = 70.0,
+    max_attempts: int = 3,
+) -> str:
+    """
+    Create a quiz container within a unit.
+
+    A quiz is a container that holds multiple quiz questions. Each quiz
+    is linked to a specific unit and can have multiple questions added to it.
+
+    Args:
+        course_id: The ID of the course
+        unit_id: The ID of the unit this quiz belongs to
+        title: Quiz title (e.g., "Unit 1 Quiz: Python Basics")
+        description: What this quiz covers (e.g., "Covers content from Units 1-2")
+        order_index: The order of this quiz within the unit (default: 1)
+        time_limit_seconds: Time limit for the quiz (None = no limit)
+        passing_score: Percentage needed to pass (0-100, default: 70)
+        max_attempts: Maximum number of attempts allowed (default: 3)
+
+    Returns:
+        JSON string with quiz_id and status
+    """
+    async def _save_quiz():
+        async with get_constructor_session() as session:
+            quiz = Quiz(
+                course_id=course_id,
+                unit_id=unit_id,
+                title=title,
+                description=description,
+                order_index=order_index,
+                time_limit_seconds=time_limit_seconds,
+                passing_score=passing_score,
+                max_attempts=max_attempts,
+                is_published=False,
+            )
+            session.add(quiz)
+            await session.commit()
+            await session.refresh(quiz)
+            return {
+                "success": True,
+                "quiz_id": quiz.id,
+                "message": f"Quiz '{title}' created successfully."
+            }
+
+    import asyncio
+    result = asyncio.run(_save_quiz())
+    return json.dumps(result)
+
+
+@tool
 def save_quiz_question(
+    quiz_id: int,
     course_id: int,
     unit_id: int,
     question_text: str,
@@ -231,22 +289,27 @@ def save_quiz_question(
     correct_answer: str = "",
     rubric: Optional[str] = None,
     difficulty: str = "medium",
+    points_value: float = 1.0,
+    order_index: int = 0,
     tags: Optional[List[str]] = None,
 ) -> str:
     """
-    Save a quiz question to the database.
+    Save a quiz question to a quiz.
 
-    Creates a quiz question linked to a specific unit and course.
+    Creates a quiz question linked to a specific quiz. The quiz must exist first.
 
     Args:
+        quiz_id: The ID of the quiz this question belongs to
         course_id: The ID of the course
-        unit_id: The ID of the unit this question is for
+        unit_id: The ID of the unit (for easier queries)
         question_text: The question text
         question_type: Type - "multiple_choice", "true_false", "short_answer", or "essay"
         options: JSON string of options for multiple choice: [{"text": "Option A", "is_correct": false}]
         correct_answer: The correct answer
         rubric: Grading criteria for open-ended questions
         difficulty: "easy", "medium", or "hard"
+        points_value: Points this question is worth (default: 1.0)
+        order_index: Order within the quiz (default: 0)
         tags: Optional list of tags for the question
 
     Returns:
@@ -260,6 +323,7 @@ def save_quiz_question(
                 metadata["tags"] = tags
 
             question = QuizQuestion(
+                quiz_id=quiz_id,
                 course_id=course_id,
                 unit_id=unit_id,
                 question_text=question_text,
@@ -268,6 +332,8 @@ def save_quiz_question(
                 correct_answer=correct_answer,
                 rubric=rubric,
                 difficulty=difficulty,
+                points_value=points_value,
+                order_index=order_index,
                 course_metadata=metadata if metadata else None,
             )
             session.add(question)

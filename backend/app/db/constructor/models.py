@@ -7,7 +7,8 @@ This module defines SQLAlchemy ORM models for:
 - Units (learning units within modules)
 - Topics (learning topics within units)
 - Materials (course content files)
-- Quiz Questions
+- Quizzes (quiz containers)
+- Quiz Questions (individual questions within quizzes)
 - Constructor Sessions
 """
 
@@ -26,6 +27,7 @@ from sqlalchemy import (
     JSON,
     Index,
     UniqueConstraint,
+    Numeric,
 )
 from sqlalchemy.orm import relationship
 
@@ -66,6 +68,7 @@ class Course(Base):
     creator = relationship("Creator", back_populates="courses")
     modules = relationship("Module", back_populates="course", cascade="all, delete-orphan", order_by="Module.order_index")
     materials = relationship("Material", back_populates="course", cascade="all, delete-orphan")
+    quizzes = relationship("Quiz", back_populates="course", cascade="all, delete-orphan")
     quiz_questions = relationship("QuizQuestion", back_populates="course", cascade="all, delete-orphan")
     sessions = relationship("ConstructorSession", back_populates="course", cascade="all, delete-orphan")
 
@@ -109,6 +112,8 @@ class Unit(Base):
     # Relationships
     module = relationship("Module", back_populates="units")
     topics = relationship("Topic", back_populates="unit", cascade="all, delete-orphan", order_by="Topic.order_index")
+    materials = relationship("Material", back_populates="unit")
+    quizzes = relationship("Quiz", back_populates="unit", cascade="all, delete-orphan", order_by="Quiz.order_index")
 
     __table_args__ = (
         UniqueConstraint("module_id", "order_index", name="unique_unit_order"),
@@ -131,6 +136,34 @@ class Topic(Base):
 
     __table_args__ = (
         UniqueConstraint("unit_id", "order_index", name="unique_topic_order"),
+    )
+
+
+class Quiz(Base):
+    """Quiz model - container for quiz questions within a unit."""
+    __tablename__ = "quizzes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    unit_id = Column(Integer, ForeignKey("units.id", ondelete="CASCADE"), nullable=False, index=True)
+    course_id = Column(Integer, ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True)
+    title = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)  # What this quiz covers
+    order_index = Column(Integer, nullable=False)  # Order within the unit
+    time_limit_seconds = Column(Integer, nullable=True)  # NULL = no time limit
+    passing_score = Column(Numeric(5, 2), default=70.00)  # Percentage needed to pass (0-100)
+    max_attempts = Column(Integer, default=3)  # Maximum number of attempts
+    is_published = Column(Boolean, default=False, index=True)
+    created_at = Column(String(50), default=lambda: datetime.utcnow().isoformat())
+    updated_at = Column(String(50), default=lambda: datetime.utcnow().isoformat(), onupdate=lambda: datetime.utcnow().isoformat())
+
+    # Relationships
+    unit = relationship("Unit", back_populates="quizzes")
+    course = relationship("Course", back_populates="quizzes")
+    questions = relationship("QuizQuestion", back_populates="quiz", cascade="all, delete-orphan", order_by="QuizQuestion.order_index")
+
+    __table_args__ = (
+        UniqueConstraint("unit_id", "order_index", name="unique_quiz_order"),
+        Index("idx_quiz_published", "is_published"),
     )
 
 
@@ -163,31 +196,35 @@ class Material(Base):
 
 
 class QuizQuestion(Base):
-    """Quiz question model."""
+    """Quiz question model - individual questions within a quiz."""
     __tablename__ = "quiz_questions"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    unit_id = Column(Integer, ForeignKey("units.id", ondelete="CASCADE"), nullable=False, index=True)
-    course_id = Column(Integer, ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True)
+    quiz_id = Column(Integer, ForeignKey("quizzes.id", ondelete="CASCADE"), nullable=False, index=True)
+    unit_id = Column(Integer, ForeignKey("units.id", ondelete="CASCADE"), nullable=False, index=True)  # Denormalized for queries
+    course_id = Column(Integer, ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True)  # Denormalized for queries
     question_text = Column(Text, nullable=False)
     question_type = Column(
         Enum("multiple_choice", "true_false", "short_answer", "essay", name="question_type"),
         nullable=False
     )
-    options = Column(JSON, nullable=True)  # List of {text, value}
+    options = Column(JSON, nullable=True)  # For multiple choice: [{"text": "Option A", "is_correct": false}]
     correct_answer = Column(Text, nullable=False)
-    rubric = Column(Text, nullable=True)
+    rubric = Column(Text, nullable=True)  # Grading criteria for open-ended questions
     difficulty = Column(
         Enum("easy", "medium", "hard", name="difficulty"),
         default="medium"
     )
-    course_metadata = Column(JSON, nullable=True)
+    points_value = Column(Numeric(5, 2), default=1.00)  # Points this question is worth
+    order_index = Column(Integer, default=0)  # Order within the quiz
+    course_metadata = Column(JSON, nullable=True)  # Tags, concepts tested, etc.
     created_at = Column(String(50), default=lambda: datetime.utcnow().isoformat())
 
     # Vector embedding for similarity search
     embedding_id = Column(String(255), nullable=True)  # Reference to vector DB
 
     # Relationships
+    quiz = relationship("Quiz", back_populates="questions")
     unit = relationship("Unit")
     course = relationship("Course", back_populates="quiz_questions")
 
