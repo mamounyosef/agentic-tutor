@@ -13,34 +13,31 @@ def initialize_langsmith(settings: Settings) -> bool:
     """
     Initialize LangSmith tracing environment.
 
+    Sets the LANGCHAIN_* environment variables that LangChain/LangGraph
+    use to automatically enable tracing for all agents and tools.
+
     Returns:
         True when tracing is enabled and API key is present, else False.
     """
-    tracing_requested = bool(settings.LANGSMITH_TRACING)
-    has_api_key = bool(settings.LANGSMITH_API_KEY.strip())
+    tracing_requested = bool(settings.LANGCHAIN_TRACING_V2)
+    has_api_key = bool(settings.LANGCHAIN_API_KEY.strip())
     tracing_enabled = tracing_requested and has_api_key
 
-    os.environ["LANGSMITH_TRACING"] = "true" if tracing_requested else "false"
+    # Set the standard LangChain environment variables
     os.environ["LANGCHAIN_TRACING_V2"] = "true" if tracing_enabled else "false"
 
-    if settings.LANGSMITH_API_KEY:
-        os.environ["LANGSMITH_API_KEY"] = settings.LANGSMITH_API_KEY
-        # Backward-compatible env names used by some LangChain integrations.
-        os.environ["LANGCHAIN_API_KEY"] = settings.LANGSMITH_API_KEY
-    if settings.LANGSMITH_ENDPOINT:
-        os.environ["LANGSMITH_ENDPOINT"] = settings.LANGSMITH_ENDPOINT
-        os.environ["LANGCHAIN_ENDPOINT"] = settings.LANGSMITH_ENDPOINT
-    if settings.LANGSMITH_PROJECT:
-        os.environ["LANGSMITH_PROJECT"] = settings.LANGSMITH_PROJECT
-        os.environ["LANGCHAIN_PROJECT"] = settings.LANGSMITH_PROJECT
-    if settings.LANGSMITH_WORKSPACE_ID:
-        os.environ["LANGSMITH_WORKSPACE_ID"] = settings.LANGSMITH_WORKSPACE_ID
+    if settings.LANGCHAIN_API_KEY:
+        os.environ["LANGCHAIN_API_KEY"] = settings.LANGCHAIN_API_KEY
+    if settings.LANGCHAIN_ENDPOINT:
+        os.environ["LANGCHAIN_ENDPOINT"] = settings.LANGCHAIN_ENDPOINT
+    if settings.LANGCHAIN_PROJECT:
+        os.environ["LANGCHAIN_PROJECT"] = settings.LANGCHAIN_PROJECT
 
     if tracing_enabled:
         logger.info(
             "LangSmith tracing enabled (project=%s, endpoint=%s)",
-            settings.LANGSMITH_PROJECT,
-            settings.LANGSMITH_ENDPOINT,
+            settings.LANGCHAIN_PROJECT,
+            settings.LANGCHAIN_ENDPOINT,
         )
     else:
         logger.info("LangSmith tracing disabled")

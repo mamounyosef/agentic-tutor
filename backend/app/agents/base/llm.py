@@ -25,7 +25,7 @@ def get_llm(
     temperature: Optional[float] = None,
     model: Optional[str] = None,
     max_tokens: Optional[int] = None,
-    streaming: bool = False,
+    streaming: bool = True,
 ) -> ChatOpenAI:
     """
     Get a configured LLM client for Z.AI.

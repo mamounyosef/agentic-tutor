@@ -1,6 +1,7 @@
 """Configuration settings for Agentic Tutor."""
 
 import secrets
+from pathlib import Path
 from typing import List
 
 from pydantic import Field, EmailStr, field_validator
@@ -56,12 +57,11 @@ class Settings(BaseSettings):
     LLM_TEMPERATURE: float = 0.7
     LLM_MAX_TOKENS: int = 4096
 
-    # LangSmith tracing
-    LANGSMITH_TRACING: bool = False
-    LANGSMITH_API_KEY: str = Field(default="", description="LangSmith API key")
-    LANGSMITH_ENDPOINT: str = "https://api.smith.langchain.com"
-    LANGSMITH_PROJECT: str = "agentic-tutor"
-    LANGSMITH_WORKSPACE_ID: str = Field(default="", description="Optional LangSmith workspace ID")
+    # LangSmith tracing (LANGCHAIN_* are the standard env var names)
+    LANGCHAIN_TRACING_V2: bool = False
+    LANGCHAIN_API_KEY: str = Field(default="", description="LangChain/LangSmith API key")
+    LANGCHAIN_ENDPOINT: str = "https://api.smith.langchain.com"
+    LANGCHAIN_PROJECT: str = "agentic-tutor"
 
     # Embeddings
     EMBEDDINGS_BASE_URL: str = "http://127.0.0.1:1234/v1"
@@ -144,6 +144,14 @@ class Settings(BaseSettings):
     def allowed_extensions_list(self) -> List[str]:
         """Convert ALLOWED_EXTENSIONS string to a list."""
         return [ext.strip() for ext in self.ALLOWED_EXTENSIONS.split(",")]
+
+    @property
+    def upload_absolute_path(self) -> Path:
+        """Get the absolute path for uploads, resolving from the backend directory."""
+        # Resolve from backend/ directory where the API runs
+        backend_dir = Path(__file__).parent.parent  # backend/app/ -> backend/
+        base_path = (backend_dir / self.UPLOAD_PATH).resolve()
+        return base_path
 
 
 def get_settings() -> Settings:

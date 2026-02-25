@@ -145,6 +145,9 @@ def get_db_session(db_type: str = "constructor"):
 
     Note: This is a simplified version. For async operations,
     use the async session generators above.
+
+    This converts async database URLs to sync-compatible URLs
+    by replacing aiomysql with pymysql.
     """
     settings = get_settings()
 
@@ -152,6 +155,13 @@ def get_db_session(db_type: str = "constructor"):
         url = settings.CONSTRUCTOR_DB_URL
     else:
         url = settings.TUTOR_DB_URL
+
+    # Convert async URL to sync URL for sync operations
+    # mysql+aiomysql:// -> mysql+pymysql://
+    if "+aiomysql://" in url:
+        url = url.replace("+aiomysql://", "+pymysql://")
+    elif "+aiosqlite://" in url:
+        url = url.replace("+aiosqlite://", "+pysqlite://")
 
     # For sync operations, create a sync engine
     from sqlalchemy import create_engine

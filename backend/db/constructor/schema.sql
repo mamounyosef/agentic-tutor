@@ -59,22 +59,40 @@ CREATE TABLE courses (
 COMMENT='Course definitions created by course creators';
 
 -- ==============================================================================
--- UNITS TABLE (Course Modules)
+-- MODULES TABLE (Course Modules - e.g., "Week 1", "Foundations")
 -- ==============================================================================
 
-CREATE TABLE units (
+CREATE TABLE modules (
     id INT AUTO_INCREMENT PRIMARY KEY,
     course_id INT NOT NULL,
     title VARCHAR(255) NOT NULL,
     description TEXT,
     order_index INT NOT NULL,
-    prerequisites JSON DEFAULT NULL COMMENT 'Array of unit IDs that must be completed first',
+    prerequisites JSON DEFAULT NULL COMMENT 'Array of module IDs that must be completed first',
 
     FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE CASCADE,
     UNIQUE KEY unique_order (course_id, order_index),
     INDEX idx_course (course_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-COMMENT='Course units/modules';
+COMMENT='Course modules (major divisions like weeks/sections)';
+
+-- ==============================================================================
+-- UNITS TABLE (Learning Units within Modules - content containers)
+-- ==============================================================================
+
+CREATE TABLE units (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    module_id INT NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    description TEXT,
+    order_index INT NOT NULL,
+    prerequisites JSON DEFAULT NULL COMMENT 'Array of unit IDs that must be completed first',
+
+    FOREIGN KEY (module_id) REFERENCES modules(id) ON DELETE CASCADE,
+    UNIQUE KEY unique_order (module_id, order_index),
+    INDEX idx_module (module_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+COMMENT='Learning units within modules - contain actual content';
 
 -- ==============================================================================
 -- TOPICS TABLE (Learning Topics within Units)
@@ -100,23 +118,50 @@ COMMENT='Learning topics within units';
 
 CREATE TABLE materials (
     id INT AUTO_INCREMENT PRIMARY KEY,
-    topic_id INT NOT NULL,
+    unit_id INT NULL COMMENT 'NULL until structure is created, then linked to unit',
     course_id INT NOT NULL,
     material_type ENUM('pdf', 'ppt', 'pptx', 'video', 'text', 'docx', 'other') NOT NULL,
     file_path VARCHAR(512) NOT NULL,
     original_filename VARCHAR(255),
-    course_metadata JSON DEFAULT NULL COMMENT '{"page_count": 0, "duration_seconds": 0, "size_bytes": 0}',
+    course_metadata JSON DEFAULT NULL COMMENT '{"page_count": 0, "duration_seconds": 0, "size_bytes": 0, "title": "", "description": ""}',
     uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     processing_status ENUM('pending', 'processing', 'completed', 'error') DEFAULT 'pending',
     chunks_count INT DEFAULT 0,
 
-    FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE CASCADE,
+    FOREIGN KEY (unit_id) REFERENCES units(id) ON DELETE CASCADE,
     FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE CASCADE,
-    INDEX idx_topic (topic_id),
+    INDEX idx_unit (unit_id),
     INDEX idx_course (course_id),
     INDEX idx_type (material_type)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-COMMENT='Course materials (PDFs, slides, videos, etc.)';
+COMMENT='Course materials (PDFs, slides, videos, etc.) - unit_id nullable for pre-ingestion';
+
+-- ==============================================================================
+-- QUIZZES TABLE (Quiz Containers - groups of questions)
+-- ==============================================================================
+
+CREATE TABLE quizzes (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    unit_id INT NOT NULL,
+    course_id INT NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    description TEXT COMMENT 'What this quiz covers (e.g., "Units 1-2: Python Basics")',
+    order_index INT NOT NULL COMMENT 'Order within the unit (1, 2, 3...)',
+    time_limit_seconds INT DEFAULT NULL COMMENT 'NULL = no time limit',
+    passing_score DECIMAL(5,2) DEFAULT 70.00 COMMENT 'Percentage needed to pass (0-100)',
+    max_attempts INT DEFAULT 3 COMMENT 'Maximum number of attempts allowed',
+    is_published BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (unit_id) REFERENCES units(id) ON DELETE CASCADE,
+    FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE CASCADE,
+    UNIQUE KEY unique_order (unit_id, order_index),
+    INDEX idx_unit (unit_id),
+    INDEX idx_course (course_id),
+    INDEX idx_published (is_published)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+COMMENT='Quiz definitions - containers for quiz questions';
 
 -- ==============================================================================
 -- QUIZ QUESTIONS TABLE
@@ -124,24 +169,29 @@ COMMENT='Course materials (PDFs, slides, videos, etc.)';
 
 CREATE TABLE quiz_questions (
     id INT AUTO_INCREMENT PRIMARY KEY,
-    topic_id INT NOT NULL,
-    course_id INT NOT NULL,
+    quiz_id INT NOT NULL COMMENT 'Links to the quiz this question belongs to',
+    unit_id INT NOT NULL COMMENT 'Denormalized for easier queries',
+    course_id INT NOT NULL COMMENT 'Denormalized for easier queries',
     question_text TEXT NOT NULL,
     question_type ENUM('multiple_choice', 'true_false', 'short_answer', 'essay') NOT NULL,
     options JSON DEFAULT NULL COMMENT 'For multiple choice: [{"text": "Option A", "is_correct": false}]',
     correct_answer TEXT,
     rubric TEXT COMMENT 'Grading criteria for open-ended questions',
     difficulty ENUM('easy', 'medium', 'hard') DEFAULT 'medium',
+    points_value DECIMAL(5,2) DEFAULT 1.00 COMMENT 'Points this question is worth',
+    order_index INT DEFAULT 0 COMMENT 'Order within the quiz',
     course_metadata JSON DEFAULT NULL COMMENT '{"tags": [], "concepts_tested": []}',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
-    FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE CASCADE,
+    FOREIGN KEY (quiz_id) REFERENCES quizzes(id) ON DELETE CASCADE,
+    FOREIGN KEY (unit_id) REFERENCES units(id) ON DELETE CASCADE,
     FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE CASCADE,
-    INDEX idx_topic (topic_id),
+    INDEX idx_quiz (quiz_id),
+    INDEX idx_unit (unit_id),
     INDEX idx_course (course_id),
     INDEX idx_difficulty (difficulty)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-COMMENT='Quiz questions bank';
+COMMENT='Individual quiz questions linked to quizzes';
 
 -- ==============================================================================
 -- CONSTRUCTOR SESSIONS TABLE (Builder Sessions)
@@ -186,6 +236,9 @@ SELECT
     'courses', COUNT(*) FROM courses
 UNION ALL
 SELECT
+    'modules', COUNT(*) FROM modules
+UNION ALL
+SELECT
     'units', COUNT(*) FROM units
 UNION ALL
 SELECT
@@ -193,6 +246,9 @@ SELECT
 UNION ALL
 SELECT
     'materials', COUNT(*) FROM materials
+UNION ALL
+SELECT
+    'quizzes', COUNT(*) FROM quizzes
 UNION ALL
 SELECT
     'quiz_questions', COUNT(*) FROM quiz_questions
