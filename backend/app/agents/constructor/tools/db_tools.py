@@ -7,12 +7,15 @@ These tools use synchronous SQLAlchemy to avoid async/await issues with LangChai
 """
 
 import json
+import logging
 from typing import Any, Dict, List, Optional, Union
 
 from langchain_core.tools import tool
 
 from app.db.base import get_db_session
 from app.db.constructor.models import Course, Module, Unit, Material, Quiz, QuizQuestion
+
+logger = logging.getLogger(__name__)
 
 
 def _sanitize_value(value: Any) -> Any:
@@ -115,7 +118,7 @@ def save_module(
     title: str,
     description: str,
     order_index: int,
-    prerequisites: Optional[str] = None,
+    prerequisites: Any = None,
 ) -> str:
     """
     Create a module within a course (e.g., "Week 1", "Foundations").
@@ -171,7 +174,7 @@ def save_unit(
     title: str,
     description: str,
     order_index: int,
-    prerequisites: Optional[str] = None,
+    prerequisites: Any = None,
 ) -> str:
     """
     Create a unit within a module.
@@ -224,14 +227,14 @@ def save_unit(
 @tool
 def save_material(
     course_id: int,
-    unit_id: Optional[int] = None,
+    unit_id: Any = None,
     material_type: str = "other",
     file_path: str = "",
     original_filename: str = "",
-    title: Optional[str] = None,
-    description: Optional[str] = None,
-    duration_seconds: Optional[str] = None,
-    page_count: Optional[str] = None,
+    title: Any = None,
+    description: Any = None,
+    duration_seconds: Any = None,
+    page_count: Any = None,
 ) -> str:
     """
     Save a material (video, PDF, slides, etc.) to a course.
@@ -308,9 +311,9 @@ def save_quiz(
     course_id: int,
     unit_id: int,
     title: str,
-    description: Optional[str] = None,
+    description: Any = None,
     order_index: int = 1,
-    time_limit_seconds: Optional[int] = None,
+    time_limit_seconds: Any = None,
     passing_score: float = 70.0,
     max_attempts: int = 3,
 ) -> str:
@@ -336,13 +339,17 @@ def save_quiz(
     session = get_db_session("constructor")
 
     try:
+        # Sanitize optional parameters
+        description_clean = _sanitize_value(description)
+        time_limit_clean = _sanitize_optional_int(time_limit_seconds)
+
         quiz = Quiz(
             course_id=course_id,
             unit_id=unit_id,
             title=title,
-            description=description,
+            description=description_clean,
             order_index=order_index,
-            time_limit_seconds=time_limit_seconds,
+            time_limit_seconds=time_limit_clean,
             passing_score=passing_score,
             max_attempts=max_attempts,
             is_published=False,
@@ -373,13 +380,13 @@ def save_quiz_question(
     unit_id: int,
     question_text: str,
     question_type: str,
-    options: Optional[str] = None,
+    options: Any = None,
     correct_answer: str = "",
-    rubric: Optional[str] = None,
+    rubric: Any = None,
     difficulty: str = "medium",
     points_value: float = 1.0,
     order_index: int = 0,
-    tags: Optional[List[str]] = None,
+    tags: Any = None,
 ) -> str:
     """
     Save a quiz question to a quiz.
@@ -406,10 +413,15 @@ def save_quiz_question(
     session = get_db_session("constructor")
 
     try:
+        # Sanitize optional parameters
+        options_clean = _sanitize_value(options)
+        rubric_clean = _sanitize_value(rubric)
+        tags_clean = _sanitize_optional_list(tags)
+
         # Build metadata JSON
         metadata = {}
-        if tags:
-            metadata["tags"] = tags
+        if tags_clean:
+            metadata["tags"] = tags_clean
 
         question = QuizQuestion(
             quiz_id=quiz_id,
@@ -417,9 +429,9 @@ def save_quiz_question(
             unit_id=unit_id,
             question_text=question_text,
             question_type=question_type,
-            options=options,  # Already a JSON string
+            options=options_clean,  # Already a JSON string
             correct_answer=correct_answer,
-            rubric=rubric,
+            rubric=rubric_clean,
             difficulty=difficulty,
             points_value=points_value,
             order_index=order_index,
@@ -458,56 +470,48 @@ def get_uploaded_files(creator_id: int) -> str:
     Returns:
         JSON string with list of uploaded files and their paths
     """
-    import os
-    import sys
     from pathlib import Path
     from app.core.config import get_settings
+    import os
 
     settings = get_settings()
 
-    # Debug: Log current working directory
-    cwd = Path.cwd()
-    debug_info = {
-        "creator_id": creator_id,
-        "cwd": str(cwd),
-        "UPLOAD_PATH": settings.UPLOAD_PATH,
-    }
+    # Debug: Log all path information
+    logger.info(f"[get_uploaded_files] === DEBUG START ===")
+    logger.info(f"[get_uploaded_files] creator_id={creator_id}")
+    logger.info(f"[get_uploaded_files] UPLOAD_PATH setting: {settings.UPLOAD_PATH}")
+    logger.info(f"[get_uploaded_files] upload_absolute_path: {settings.upload_absolute_path}")
+    logger.info(f"[get_uploaded_files] Current working directory: {os.getcwd()}")
 
-    # Try multiple possible upload locations
-    # Note: Must resolve the full path, not just the creator_id string
-    possible_dirs = [
-        (Path(settings.UPLOAD_PATH) / "constructor" / str(creator_id)).resolve(),
-        (Path("backend/uploads/constructor") / str(creator_id)).resolve(),
-        (Path("uploads/constructor") / str(creator_id)).resolve(),
-        (Path(cwd) / "uploads" / "constructor" / str(creator_id)).resolve(),
-    ]
+    # Use the SAME absolute path as the upload endpoint
+    upload_dir = settings.upload_absolute_path / "constructor" / str(creator_id)
+    logger.info(f"[get_uploaded_files] target upload_dir: {upload_dir}")
+    logger.info(f"[get_uploaded_files] upload_dir exists: {upload_dir.exists()}")
 
-    # Also try absolute path from backend
-    backend_dir = Path(__file__).parent.parent.parent.resolve()  # Go up from backend/app/agents/constructor/tools/
-    possible_dirs.append((backend_dir / "uploads" / "constructor" / str(creator_id)).resolve())
+    # List what's actually in the upload base
+    upload_base = settings.upload_absolute_path
+    if upload_base.exists():
+        logger.info(f"[get_uploaded_files] Contents of upload_base: {list(upload_base.iterdir())}")
+        constructor_dir = upload_base / "constructor"
+        if constructor_dir.exists():
+            logger.info(f"[get_uploaded_files] Contents of constructor: {list(constructor_dir.iterdir())}")
+    else:
+        logger.warning(f"[get_uploaded_files] upload_base does not exist: {upload_base}")
 
-    upload_dir = None
-    found_dir = None
+    # Check alternative path: backend/uploads
+    backend_uploads = Path(__file__).parent.parent.parent / "uploads" / "constructor" / str(creator_id)
+    logger.info(f"[get_uploaded_files] Checking alternative path: {backend_uploads}, exists: {backend_uploads.exists()}")
+    if backend_uploads.exists():
+        logger.info(f"[get_uploaded_files] Alternative path HAS files: {list(backend_uploads.iterdir())}")
 
-    for dir_path in possible_dirs:
-        debug_info[f"checked_{str(dir_path)}"] = str(dir_path.exists())
+    logger.info(f"[get_uploaded_files] === DEBUG END ===")
 
-        if dir_path.exists():
-            upload_dir = dir_path
-            found_dir = str(dir_path)
-            break
-
-    debug_info["possible_dirs"] = [str(d) for d in possible_dirs]
-    debug_info["found_dir"] = found_dir
-
-    if not upload_dir or not upload_dir.exists():
+    if not upload_dir.exists():
         result = {
             "success": True,
             "files": [],
-            "upload_dir": str(settings.UPLOAD_PATH / "constructor" / str(creator_id)),
-            "tried_paths": [str(d) for d in possible_dirs],
-            "debug": debug_info,
-            "message": f"No upload directory found. Creator ID: {creator_id}"
+            "upload_dir": str(upload_dir),
+            "message": f"No upload directory found. Creator ID: {creator_id}, Upload dir: {upload_dir}"
         }
         return json.dumps(result)
 
@@ -532,14 +536,14 @@ def get_uploaded_files(creator_id: int) -> str:
                 "size": file_path.stat().st_size,
             })
 
+    logger.info(f"[get_uploaded_files] Found {len(files)} files for creator_id={creator_id}: {[f['original_filename'] for f in files]}")
+
     result = {
         "success": True,
         "upload_dir": str(upload_dir),
-        "found_dir": found_dir,
         "creator_id": creator_id,
         "files": files,
         "total_files": len(files),
-        "debug": debug_info,
         "message": f"Found {len(files)} uploaded file(s) at {upload_dir}"
     }
     return json.dumps(result)

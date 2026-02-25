@@ -118,12 +118,12 @@ COMMENT='Learning topics within units';
 
 CREATE TABLE materials (
     id INT AUTO_INCREMENT PRIMARY KEY,
-    unit_id INT NOT NULL,
+    unit_id INT NULL COMMENT 'NULL until structure is created, then linked to unit',
     course_id INT NOT NULL,
     material_type ENUM('pdf', 'ppt', 'pptx', 'video', 'text', 'docx', 'other') NOT NULL,
     file_path VARCHAR(512) NOT NULL,
     original_filename VARCHAR(255),
-    course_metadata JSON DEFAULT NULL COMMENT '{"page_count": 0, "duration_seconds": 0, "size_bytes": 0}',
+    course_metadata JSON DEFAULT NULL COMMENT '{"page_count": 0, "duration_seconds": 0, "size_bytes": 0, "title": "", "description": ""}',
     uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     processing_status ENUM('pending', 'processing', 'completed', 'error') DEFAULT 'pending',
     chunks_count INT DEFAULT 0,
@@ -134,7 +134,7 @@ CREATE TABLE materials (
     INDEX idx_course (course_id),
     INDEX idx_type (material_type)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-COMMENT='Course materials (PDFs, slides, videos, etc.)';
+COMMENT='Course materials (PDFs, slides, videos, etc.) - unit_id nullable for pre-ingestion';
 
 -- ==============================================================================
 -- QUIZZES TABLE (Quiz Containers - groups of questions)

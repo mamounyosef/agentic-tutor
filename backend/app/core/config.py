@@ -1,6 +1,7 @@
 """Configuration settings for Agentic Tutor."""
 
 import secrets
+from pathlib import Path
 from typing import List
 
 from pydantic import Field, EmailStr, field_validator
@@ -143,6 +144,14 @@ class Settings(BaseSettings):
     def allowed_extensions_list(self) -> List[str]:
         """Convert ALLOWED_EXTENSIONS string to a list."""
         return [ext.strip() for ext in self.ALLOWED_EXTENSIONS.split(",")]
+
+    @property
+    def upload_absolute_path(self) -> Path:
+        """Get the absolute path for uploads, resolving from the backend directory."""
+        # Resolve from backend/ directory where the API runs
+        backend_dir = Path(__file__).parent.parent  # backend/app/ -> backend/
+        base_path = (backend_dir / self.UPLOAD_PATH).resolve()
+        return base_path
 
 
 def get_settings() -> Settings:

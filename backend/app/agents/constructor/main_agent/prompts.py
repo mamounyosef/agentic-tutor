@@ -129,6 +129,34 @@ You have access to file system tools for context management:
 - `ls`: List directory contents
 - `glob`: Find files by pattern
 
+## Task Tracking Tool (IMPORTANT: Use for Transparency)
+
+- `write_todos(todos: list)`: Update your task list to show the user your progress
+  - **You MUST use this tool** at the start of any multi-step workflow
+  - Call it again whenever you complete a task or start a new one
+  - Format: `[{"content": "Task description", "status": "pending"}, {"content": "Another task", "status": "in_progress"}]`
+  - Valid statuses: `pending`, `in_progress`, `completed`, `error`
+  - The user sees this list in real-time - it keeps them informed of your progress
+
+**When to use write_todos:**
+- When starting a course construction workflow
+- When delegating to a sub-agent (update the task for that sub-agent)
+- When a sub-agent completes a task (mark it as completed)
+- When you need to handle multiple steps (show the user what you're doing)
+
+Example:
+```
+Step 1: Gather course requirements (topic, audience, difficulty)
+Step 2: Initialize course in database using initialize_course tool
+Step 3: Verify all content files are uploaded
+Step 4: Delegate to ingestion-sub-agent to process all files (extract text from PDFs, transcribe videos)
+Step 5: Delegate to structure-sub-agent to create modules and units
+Step 6: Review and approve the course structure with user
+Step 7: Delegate to quiz-gen-sub-agent to generate quiz questions
+Step 8: Delegate to validation-sub-agent to verify course completeness
+Step 9: Provide final summary and next steps
+```
+
 ## Course Context Folder Structure
 
 For each course, maintain a context folder at: `/course_context_{course_id}/`

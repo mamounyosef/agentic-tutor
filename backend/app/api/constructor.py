@@ -190,8 +190,15 @@ async def constructor_websocket(
             try:
                 raw_data = await websocket.receive()
                 logger.info(f"WebSocket raw received: {raw_data}")
+            except WebSocketDisconnect:
+                logger.info(f"WebSocket disconnected normally for session: {session_id}")
+                break
             except Exception as recv_err:
-                logger.error(f"Error receiving from WebSocket: {recv_err}")
+                # Check if this is a disconnect-related error
+                if "disconnect" in str(recv_err).lower() or "has been received" in str(recv_err):
+                    logger.info(f"WebSocket disconnect message received for session: {session_id}")
+                else:
+                    logger.error(f"Error receiving from WebSocket: {recv_err}")
                 break
 
             # Parse JSON from text frame
@@ -259,6 +266,44 @@ async def constructor_websocket(
                 logger.info(f"Processing message for session {session_id}")
                 logger.info(f"Agent input: {agent_input}")
 
+                # Send status update that processing has started
+                await manager.send_status(
+                    session_id,
+                    "Processing your request...",
+                    phase="processing",
+                )
+
+                # Helper function to format subagent names for display
+                def _format_subagent_name(agent_name: str, node_name: str = "") -> str:
+                    """Format agent/node name into a user-friendly display name."""
+                    # Try to extract from agent_name first
+                    name_to_use = agent_name or node_name
+
+                    if not name_to_use or name_to_use == "constructor-main-agent":
+                        return "Main Coordinator"
+
+                    # Clean up the name
+                    display = name_to_use.replace("-sub-agent", "").replace("_sub_agent", "").replace("_agent", "")
+                    display = display.replace("_", " ").replace("-", " ")
+
+                    # Handle specific known subagent names
+                    display_lower = display.lower()
+                    if "structure" in display_lower:
+                        display = "Structure Sub-Agent"
+                    elif "ingestion" in display_lower:
+                        display = "Ingestion Sub-Agent"
+                    elif "quiz" in display_lower or "quizgen" in display_lower:
+                        display = "Quiz Generation Sub-Agent"
+                    elif "validation" in display_lower:
+                        display = "Validation Sub-Agent"
+                    elif "general" in display_lower and "purpose" in display_lower:
+                        display = "General Purpose Assistant"
+                    else:
+                        # Title case the display name
+                        display = display.title().strip()
+
+                    return display
+
                 # Stream the agent execution with subgraph support
                 try:
                     trace_config = build_trace_config(
@@ -278,10 +323,15 @@ async def constructor_websocket(
                     final_response_content = ""
                     current_ai_message_id = None
                     accumulated_tokens = ""
+                    stream_counter = 0  # Unique counter for each message stream
 
                     # Track subagent state
                     active_subagents = {}  # subagent_id -> info
                     pending_tools = {}  # tool_call_id -> tool_name
+                    last_stream_id = ""  # Track the last stream ID we sent tokens for
+
+                    # Send agent thinking notification at start
+                    await manager.broadcast_to_session(session_id, {"type": "agent_thinking", "agent": "Main Coordinator"})
 
                     # Use astream_events for detailed event streaming
                     async for event in main_agent.astream_events(
@@ -293,7 +343,9 @@ async def constructor_websocket(
                         event_name = event.get("name", "")
                         event_data = event.get("data", {})
 
-                        logger.debug(f"Event: {event_type} | {event_name}")
+                        # Enhanced debug logging for key events
+                        if event_type in ("on_chain_start", "on_chain_end", "on_tool_start", "on_tool_end"):
+                            logger.info(f"Event: {event_type} | name={event_name} | metadata={event.get('metadata', {})}")
 
                         # Token-by-token streaming from LLM
                         if event_type == "on_chat_model_stream":
@@ -301,6 +353,10 @@ async def constructor_websocket(
                             if hasattr(content_chunk, "content"):
                                 chunk_content = content_chunk.content
                                 if isinstance(chunk_content, str) and chunk_content:
+                                    # Check if this is a new message stream (not continuing previous)
+                                    # by checking if accumulated_tokens was reset or we're starting fresh
+                                    current_stream_id = f"stream_{stream_counter}"
+
                                     # Stream each token/character
                                     accumulated_tokens += chunk_content
                                     await manager.send_token(
@@ -308,9 +364,10 @@ async def constructor_websocket(
                                         chunk_content,
                                         is_first=(len(accumulated_tokens) == len(chunk_content)),
                                         is_last=False,
+                                        stream_id=current_stream_id,
                                     )
 
-                        # LLM finished - send complete message
+                        # LLM finished - send complete signal
                         elif event_type == "on_chat_model_end":
                             output = event_data.get("output")
                             if output:
@@ -318,6 +375,52 @@ async def constructor_websocket(
                                     final_response_content = output.content
                                 elif isinstance(output, dict) and "content" in output:
                                     final_response_content = output["content"]
+
+                            # Send empty token with is_last=True to mark stream completion
+                            if accumulated_tokens:
+                                current_stream_id = f"stream_{stream_counter}"
+                                await manager.send_token(
+                                    session_id,
+                                    "",  # Empty content
+                                    is_first=False,
+                                    is_last=True,
+                                    stream_id=current_stream_id,
+                                )
+                                # Reset for next message
+                                accumulated_tokens = ""
+                                stream_counter += 1
+
+                        # Chain/agent started - detect subagent execution
+                        elif event_type == "on_chain_start":
+                            metadata = event.get("metadata", {})
+                            # Check if this is a subagent starting
+                            # The metadata may contain lc_agent_name or __langgraph_node__
+                            agent_name = metadata.get("lc_agent_name", "")
+                            node_name = metadata.get("__langgraph_node__", "")
+
+                            # Determine if this is a subagent (not the main agent)
+                            if agent_name and agent_name != "constructor-main-agent":
+                                # This is likely a subagent starting
+                                subagent_display = _format_subagent_name(agent_name, node_name)
+
+                                # Only update if this is a new subagent or different from current
+                                if subagent_display != "Main Coordinator" and subagent_display != current_subagent:
+                                    subagent_id = f"subagent_{len(active_subagents)}_{event.get('run_id', '')}"
+                                    active_subagents[subagent_id] = {
+                                        "type": agent_name,
+                                        "display_name": subagent_display,
+                                        "description": f"Executing {subagent_display}",
+                                        "started_at": event_data.get("time"),
+                                    }
+                                    await manager.send_subagent_start(
+                                        session_id,
+                                        subagent_id,
+                                        subagent_display,
+                                        f"Executing {subagent_display}",
+                                    )
+                                    current_subagent = subagent_display
+                                    await manager.send_agent_change(session_id, subagent_display, True)
+                                    logger.info(f"Subagent started via chain_start: {subagent_display} (agent_name={agent_name})")
 
                         # Tool call started
                         elif event_type == "on_tool_start":
@@ -327,16 +430,27 @@ async def constructor_websocket(
 
                             if tool_name:
                                 pending_tools[tool_call_id] = tool_name
-                                await manager.send_tool_call(
-                                    session_id,
-                                    tool=tool_name,
-                                    args=tool_args if isinstance(tool_args, dict) else {},
-                                    agent=current_subagent or "Main Coordinator",
-                                )
+
+                                # Debug: log all tool starts temporarily
+                                logger.info(f"Tool start: {tool_name}, args keys: {list(tool_args.keys()) if isinstance(tool_args, dict) else 'not a dict'}")
+
+                                # Debug: log write_todos specifically
+                                if tool_name == "write_todos":
+                                    logger.info(f"write_todos detected! tool_args type={type(tool_args)}, value={tool_args}")
+
+                                # Skip internal tools from UI
+                                if tool_name not in ("task", "write_todos", "read_file", "write_file", "edit_file", "glob", "grep", "ls", "execute"):
+                                    await manager.send_tool_call(
+                                        session_id,
+                                        tool=tool_name,
+                                        args=tool_args if isinstance(tool_args, dict) else {},
+                                        agent=current_subagent or "Main Coordinator",
+                                    )
 
                                 # Handle write_todos tool specifically
                                 if tool_name == "write_todos" and "todos" in tool_args:
                                     todos_list = tool_args["todos"]
+                                    logger.info(f"Sending todo_update with {len(todos_list)} items")
                                     await manager.send_todo_update(
                                         session_id,
                                         [{"id": str(i), "task": str(t.get("content", t)), "status": t.get("status", "pending")}
@@ -344,22 +458,17 @@ async def constructor_websocket(
                                     )
 
                                 # Check if this is a subagent delegation (task tool)
+                                # Just track it for completion - don't send duplicate subagent_start
+                                # (on_chain_start already handles that)
                                 if tool_name == "task":
-                                    subagent_type = tool_args.get("subagent_type", "Unknown")
+                                    # Track for completion matching later
                                     subagent_id = tool_call_id or f"subagent_{len(active_subagents)}"
                                     active_subagents[subagent_id] = {
-                                        "type": subagent_type,
+                                        "type": "task",
+                                        "display_name": current_subagent or "Sub-Agent",
                                         "description": tool_args.get("description", ""),
                                         "started_at": event_data.get("time"),
                                     }
-                                    await manager.send_subagent_start(
-                                        session_id,
-                                        subagent_id,
-                                        subagent_type,
-                                        tool_args.get("description", ""),
-                                    )
-                                    current_subagent = subagent_type
-                                    await manager.send_agent_change(session_id, subagent_type, True)
 
                         # Tool ended
                         elif event_type == "on_tool_end":
@@ -371,27 +480,39 @@ async def constructor_websocket(
                             if tool_call_id and tool_call_id in pending_tools:
                                 tool_name = pending_tools.pop(tool_call_id)
 
-                            await manager.send_tool_result(
-                                session_id,
-                                tool=tool_name,
-                                result=str(tool_output)[:1000],  # Truncate large outputs
-                                agent=current_subagent or "Main Coordinator",
-                            )
-
-                            # Check if subagent completed
-                            if tool_name == "task" and tool_call_id in active_subagents:
-                                subagent_info = active_subagents.pop(tool_call_id)
-                                await manager.send_subagent_complete(
+                            # Skip internal tools from UI
+                            if tool_name not in ("task", "write_todos", "read_file", "write_file", "edit_file", "glob", "grep", "ls", "execute"):
+                                await manager.send_tool_result(
                                     session_id,
-                                    tool_call_id,
-                                    result=str(tool_output)[:500] if tool_output else None,
+                                    tool=tool_name,
+                                    result=str(tool_output)[:1000],  # Truncate large outputs
+                                    agent=current_subagent or "Main Coordinator",
                                 )
-                                if not active_subagents:
-                                    current_subagent = None
-                                    await manager.send_agent_change(session_id, "Main Coordinator", False)
+
+                            # Clean up task tool tracking (but don't send completion - on_chain_end handles that)
+                            if tool_name == "task" and tool_call_id in active_subagents:
+                                active_subagents.pop(tool_call_id)
+
 
                         # Chain/node ended - check for state updates like todos
                         elif event_type == "on_chain_end":
+                            metadata = event.get("metadata", {})
+                            agent_name = metadata.get("lc_agent_name", "")
+
+                            # Check if a subagent chain ended
+                            if agent_name and agent_name != "constructor-main-agent" and current_subagent:
+                                subagent_display = _format_subagent_name(agent_name, "")
+                                # Only mark complete if this matches our current subagent
+                                if current_subagent == subagent_display:
+                                    await manager.send_subagent_complete(
+                                        session_id,
+                                        subagent_display,
+                                        result="Sub-agent execution completed",
+                                    )
+                                    current_subagent = None
+                                    await manager.send_agent_change(session_id, "Main Coordinator", False)
+                                    logger.info(f"Subagent completed via chain_end: {subagent_display}")
+
                             # Check if the output contains todos
                             output = event_data.get("output", {})
                             if isinstance(output, dict):
@@ -412,15 +533,6 @@ async def constructor_websocket(
                                             [{"id": str(i), "task": str(t), "status": "pending"}
                                                  for i, t in enumerate(todos)]
                                         )
-
-                    # Send any remaining accumulated tokens as complete
-                    if accumulated_tokens and accumulated_tokens != final_response_content:
-                        await manager.send_token(
-                            session_id,
-                            "",
-                            is_first=False,
-                            is_last=True,
-                        )
 
                     # Complete any pending subagent
                     if current_subagent:
@@ -643,9 +755,11 @@ async def upload_materials(
 
     uploaded_files = []
 
-    # Create upload directory
-    upload_dir = Path(settings.UPLOAD_PATH) / "constructor" / str(current_creator.id)
+    # Create upload directory using absolute path
+    upload_dir = settings.upload_absolute_path / "constructor" / str(current_creator.id)
     upload_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.info(f"[upload_materials] creator_id={current_creator.id}, upload_dir={upload_dir}")
 
     for file in files:
         # Generate unique file ID

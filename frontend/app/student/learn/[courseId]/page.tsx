@@ -53,13 +53,14 @@ interface QuizQuestion {
 
 export default function StudentLearnPage({ params }: { params: { courseId: string } }) {
   const router = useRouter()
-  const { studentToken, studentId, logout } = useAuthStore()
+  const { studentToken, studentId, logout, _hasHydrated } = useAuthStore()
   const courseId = parseInt(params.courseId)
 
   const [messages, setMessages] = useState<Message[]>([])
   const [inputMessage, setInputMessage] = useState("")
   const [isLoading, setIsLoading] = useState(false)
   const [isConnected, setIsConnected] = useState(false)
+  const [isStoreHydrated, setIsStoreHydrated] = useState(false)
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [courseTitle, setCourseTitle] = useState("")
   const [topics, setTopics] = useState<Topic[]>([])
@@ -68,16 +69,22 @@ export default function StudentLearnPage({ params }: { params: { courseId: strin
   const [activeQuiz, setActiveQuiz] = useState<QuizQuestion | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const initRequestIdRef = useRef(0)
 
   useEffect(() => {
-    if (!studentToken) {
+    // Only redirect to login after store has hydrated from localStorage
+    if (_hasHydrated && !studentToken) {
       router.push("/auth/login")
       return
     }
-    initializeSession()
-    loadCourseDetails()
+
+    // Only initialize if we have a token and store has hydrated
+    if (_hasHydrated && studentToken) {
+      initializeSession()
+      loadCourseDetails()
+    }
 
     return () => {
       initRequestIdRef.current += 1
@@ -86,11 +93,33 @@ export default function StudentLearnPage({ params }: { params: { courseId: strin
         wsRef.current = null
       }
     }
-  }, [])
+  }, [_hasHydrated, studentToken])
+
+  // Track store hydration state
+  useEffect(() => {
+    if (_hasHydrated) {
+      setIsStoreHydrated(true)
+    }
+  }, [_hasHydrated])
 
   useEffect(() => {
     scrollToBottom()
   }, [messages])
+
+  // Auto-resize textarea
+  useEffect(() => {
+    const textarea = textareaRef.current
+    if (!textarea) return
+
+    const resize = () => {
+      textarea.style.height = 'auto'
+      textarea.style.height = `${Math.min(textarea.scrollHeight, 160)}px`
+    }
+
+    resize()
+    textarea.addEventListener('input', resize)
+    return () => textarea.removeEventListener('input', resize)
+  }, [inputMessage])
 
   const initializeSession = async () => {
     const requestId = ++initRequestIdRef.current
@@ -322,6 +351,18 @@ export default function StudentLearnPage({ params }: { params: { courseId: strin
     if (mastery >= 0.8) return "bg-green-500"
     if (mastery >= 0.5) return "bg-yellow-500"
     return "bg-red-500"
+  }
+
+  // Show loading while store hydrates from localStorage
+  if (!isStoreHydrated) {
+    return (
+      <div className="min-h-screen flex items-center justify-center gradient-bg">
+        <div className="text-center space-y-4">
+          <Loader2 className="w-8 h-8 animate-spin mx-auto text-primary" />
+          <p className="text-muted-foreground">Loading...</p>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -562,11 +603,12 @@ export default function StudentLearnPage({ params }: { params: { courseId: strin
                 <div className="p-4 border-t border-border/50">
                   <div className="flex gap-2">
                     <Textarea
+                      ref={textareaRef}
                       placeholder="Ask a question or share what you're learning..."
                       value={inputMessage}
                       onChange={(e) => setInputMessage(e.target.value)}
                       onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && (e.preventDefault(), handleSendMessage())}
-                      className="flex-1 min-h-[44px] max-h-40 resize-y"
+                      className="flex-1 min-h-[44px] max-h-40 overflow-y-auto"
                       disabled={!!activeQuiz}
                     />
                     <Button

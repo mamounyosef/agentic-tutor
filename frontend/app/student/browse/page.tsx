@@ -37,20 +37,33 @@ interface Course {
 
 export default function StudentBrowse() {
   const router = useRouter()
-  const { studentToken, studentId, logout } = useAuthStore()
+  const { studentToken, studentId, logout, _hasHydrated } = useAuthStore()
   const [courses, setCourses] = useState<Course[]>([])
   const [filteredCourses, setFilteredCourses] = useState<Course[]>([])
   const [isLoading, setIsLoading] = useState(true)
+  const [isStoreHydrated, setIsStoreHydrated] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
   const [selectedDifficulty, setSelectedDifficulty] = useState<string>("all")
 
   useEffect(() => {
-    if (!studentToken) {
+    // Only redirect to login after store has hydrated from localStorage
+    if (_hasHydrated && !studentToken) {
       router.push("/auth/login")
       return
     }
-    loadCourses()
-  }, [])
+
+    // Only load courses if we have a token and store has hydrated
+    if (_hasHydrated && studentToken) {
+      loadCourses()
+    }
+  }, [_hasHydrated, studentToken])
+
+  // Track store hydration state
+  useEffect(() => {
+    if (_hasHydrated) {
+      setIsStoreHydrated(true)
+    }
+  }, [_hasHydrated])
 
   useEffect(() => {
     // Filter courses
@@ -109,6 +122,18 @@ export default function StudentBrowse() {
   const handleLogout = () => {
     logout()
     router.push("/auth/login")
+  }
+
+  // Show loading while store hydrates from localStorage
+  if (!isStoreHydrated) {
+    return (
+      <div className="min-h-screen flex items-center justify-center gradient-bg">
+        <div className="text-center space-y-4">
+          <Loader2 className="w-8 h-8 animate-spin mx-auto text-primary" />
+          <p className="text-muted-foreground">Loading...</p>
+        </div>
+      </div>
+    )
   }
 
   return (
