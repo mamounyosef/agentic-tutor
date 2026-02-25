@@ -2,6 +2,8 @@
 
 This module creates and exports the main coordinator agent that orchestrates
 the course construction process by delegating to specialized sub-agents.
+
+All agent invocations are traced with LangSmith for observability.
 """
 
 from deepagents import create_deep_agent
@@ -14,6 +16,7 @@ from app.agents.constructor.tools.db_tools import (
     save_material,
     save_quiz,
     save_quiz_question,
+    get_uploaded_files,
 )
 from app.agents.constructor.tools.ingestion_tools import (
     extract_text_from_pdf,
@@ -28,6 +31,14 @@ from .prompts import (
     QUIZ_GEN_SUB_AGENT_PROMPT,
     VALIDATION_SUB_AGENT_PROMPT,
 )
+
+# LangSmith metadata for tracing
+LANGSMITH_METADATA = {
+    "project": "agentic-tutor",
+    "workflow": "course-construction",
+    "agent_type": "coordinator",
+    "subagents": ["structure", "ingestion", "quiz-gen", "validation"],
+}
 
 # Get the LLM instance
 llm = get_llm()
@@ -50,6 +61,7 @@ ingestion_sub_agent = {
     "description": "Processes uploaded course materials (PDFs, videos, slides) into text and organizes them into a context folder. Use when ALL content files have been uploaded and need to be processed.",
     "system_prompt": INGESTION_SUB_AGENT_PROMPT,
     "tools": [
+        get_uploaded_files,
         save_material,
         extract_text_from_pdf,
         extract_text_from_slides,
@@ -78,6 +90,7 @@ validation_sub_agent = {
 }
 
 # Create the main coordinator agent with all sub-agents
+# LangSmith tracing will automatically track all agent runs, tool calls, and sub-agent delegation
 main_agent = create_deep_agent(
     model=llm,
     system_prompt=MAIN_COORDINATOR_PROMPT,

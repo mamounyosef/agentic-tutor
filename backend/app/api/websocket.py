@@ -6,7 +6,7 @@ streaming of LLM responses to both Constructor and Tutor workflows.
 
 import json
 import logging
-from typing import Dict, Optional, Set
+from typing import Any, Dict, Optional, Set
 from fastapi import WebSocket, WebSocketDisconnect
 
 from langchain_core.messages import BaseMessage, AIMessage, HumanMessage
@@ -200,6 +200,140 @@ class ConnectionManager:
             logger.error(f"Error broadcasting to session {session_id}: {e}")
             self.disconnect(session_id)
             return False
+
+    # =============================================================================
+    # Subagent and Tool Event Methods
+    # =============================================================================
+
+    async def send_subagent_start(
+        self,
+        session_id: str,
+        subagent_id: str,
+        subagent_type: str,
+        description: str,
+    ) -> bool:
+        """Send subagent start event."""
+        return await self.broadcast_to_session(
+            session_id,
+            {
+                "type": "subagent_start",
+                "subagent_id": subagent_id,
+                "subagent_type": subagent_type,
+                "description": description,
+                "timestamp": json.dumps({"__type__": "timestamp"}),
+            },
+        )
+
+    async def send_subagent_complete(
+        self,
+        session_id: str,
+        subagent_id: str,
+        result: Optional[str] = None,
+    ) -> bool:
+        """Send subagent complete event."""
+        return await self.broadcast_to_session(
+            session_id,
+            {
+                "type": "subagent_complete",
+                "subagent_id": subagent_id,
+                "result": result,
+                "timestamp": json.dumps({"__type__": "timestamp"}),
+            },
+        )
+
+    async def send_subagent_error(
+        self,
+        session_id: str,
+        subagent_id: str,
+        error: str,
+    ) -> bool:
+        """Send subagent error event."""
+        return await self.broadcast_to_session(
+            session_id,
+            {
+                "type": "subagent_error",
+                "subagent_id": subagent_id,
+                "error": error,
+                "timestamp": json.dumps({"__type__": "timestamp"}),
+            },
+        )
+
+    async def send_tool_call(
+        self,
+        session_id: str,
+        tool: str,
+        args: Dict[str, Any],
+        agent: str = "Main Coordinator",
+        subagent_id: Optional[str] = None,
+    ) -> bool:
+        """Send tool call event."""
+        return await self.broadcast_to_session(
+            session_id,
+            {
+                "type": "tool_call",
+                "tool": tool,
+                "args": args,
+                "agent": agent,
+                "subagent_id": subagent_id,
+                "timestamp": json.dumps({"__type__": "timestamp"}),
+            },
+        )
+
+    async def send_tool_result(
+        self,
+        session_id: str,
+        tool: str,
+        result: Any,
+        agent: str = "Main Coordinator",
+        subagent_id: Optional[str] = None,
+    ) -> bool:
+        """Send tool result event."""
+        # Convert result to string if it's too large or complex
+        result_str = str(result)
+        if len(result_str) > 1000:
+            result_str = result_str[:1000] + "... (truncated)"
+
+        return await self.broadcast_to_session(
+            session_id,
+            {
+                "type": "tool_result",
+                "tool": tool,
+                "result": result_str,
+                "agent": agent,
+                "subagent_id": subagent_id,
+                "timestamp": json.dumps({"__type__": "timestamp"}),
+            },
+        )
+
+    async def send_todo_update(
+        self,
+        session_id: str,
+        todos: list[Dict[str, Any]],
+    ) -> bool:
+        """Send todo list update."""
+        return await self.broadcast_to_session(
+            session_id,
+            {
+                "type": "todo_update",
+                "todos": todos,
+            },
+        )
+
+    async def send_agent_change(
+        self,
+        session_id: str,
+        agent: str,
+        is_subagent: bool = False,
+    ) -> bool:
+        """Send agent change event."""
+        return await self.broadcast_to_session(
+            session_id,
+            {
+                "type": "agent_change",
+                "agent": agent,
+                "is_subagent": is_subagent,
+            },
+        )
 
     def is_connected(self, session_id: str) -> bool:
         """

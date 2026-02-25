@@ -1,7 +1,7 @@
 """Constructor API endpoints for course creation workflow."""
 
 import logging
-import hashlib
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -10,11 +10,6 @@ from sqlalchemy import select, update
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel
 
-from app.agents.base.message_utils import (
-    append_user_message,
-    latest_assistant_after_last_user,
-    latest_assistant_content,
-)
 from app.core.config import Settings, get_settings
 from app.db.constructor.models import Course, Creator
 from app.db.base import get_constructor_session
@@ -23,16 +18,14 @@ from app.api.websocket import manager
 from app.observability.langsmith import build_trace_config
 
 # Import Constructor agents
-from app.agents.constructor.coordinator.agent import build_coordinator_graph, CoordinatorGraph
-from app.agents.constructor.coordinator.prompts import WELCOME_MESSAGE
-from app.agents.constructor.state import (
-    ConstructorState,
-    create_initial_constructor_state,
-    resolve_creator_id,
-)
+from app.agents.constructor.main_agent.agent import main_agent
 
-# Type alias
-ConstructorGraph = CoordinatorGraph
+# Welcome message for new sessions
+WELCOME_MESSAGE = (
+    "Welcome to the Course Constructor! I'm here to help you build a comprehensive course. "
+    "To get started, tell me about your course - what topic will it cover, who is the target audience, "
+    "and what difficulty level are you aiming for?"
+)
 
 logger = logging.getLogger(__name__)
 
@@ -83,9 +76,33 @@ def _llm_connection_message(settings: Settings) -> str:
     )
 
 
-def _resolved_creator_id(raw_creator_id: Any, session_id: str) -> Optional[int]:
+def _resolve_creator_id(raw_creator_id: Any, session_id: str) -> Optional[int]:
     """Resolve creator_id from message payload or session identifier."""
-    return resolve_creator_id(raw_creator_id, session_id)
+    try:
+        return int(raw_creator_id) if raw_creator_id else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _get_agent_name_from_namespace(namespace: tuple) -> str:
+    """Extract a human-readable agent name from the namespace.
+
+    Namespace format:
+    - () -> Main agent
+    - ("tools:abc123",) -> A subagent (extract from subagent metadata)
+    - ("tools:abc123", "model_request:def456") -> Nested within subagent
+    """
+    if not namespace:
+        return "Main Coordinator"
+
+    # Look for the tools: segment which indicates a subagent
+    for segment in namespace:
+        if segment.startswith("tools:"):
+            # Return a generic subagent name - the actual subagent type
+            # will be communicated through the agent's messages
+            return "Sub-Agent"
+
+    return "Unknown Agent"
 
 
 # ==============================================================================
@@ -128,19 +145,23 @@ class CoursePublishRequest(BaseModel):
 # Session Management
 # ==============================================================================
 
-# In-memory session storage (in production, use Redis or similar)
-_constructor_sessions: dict[str, ConstructorGraph] = {}
+# In-memory session storage for deepagents
+# Each session stores: {"messages": [], "thread_id": str}
+_constructor_sessions: dict[str, dict[str, Any]] = {}
 
 
-def get_constructor_session_graph(session_id: str) -> Optional["ConstructorGraph"]:
-    """Get or create a constructor session graph."""
+def get_constructor_session(session_id: str) -> dict[str, Any]:
+    """Get or create a constructor session."""
     if session_id not in _constructor_sessions:
-        _constructor_sessions[session_id] = build_coordinator_graph(session_id)
+        _constructor_sessions[session_id] = {
+            "messages": [],
+            "thread_id": session_id,
+        }
     return _constructor_sessions[session_id]
 
 
 # ==============================================================================
-# WebSocket Endpoint for Streaming
+# WebSocket Endpoint for Streaming with Subgraph Support
 # ==============================================================================
 
 @router.websocket("/session/ws/{session_id}")
@@ -151,60 +172,95 @@ async def constructor_websocket(
     """
     WebSocket endpoint for streaming Constructor Agent responses.
 
-    This provides real-time, token-by-token streaming of agent responses.
+    This provides real-time, token-by-token streaming of agent responses
+    with full subagent visibility using deepagents subgraph streaming.
     """
     settings = get_settings()
     await manager.connect(session_id, websocket)
     logger.info(f"Constructor WebSocket connected for session: {session_id}")
 
+    # Track current agent for display purposes
+    current_source = ""
+    mid_line = False  # True when we've written tokens without a trailing newline
+
     try:
+        logger.info("Starting WebSocket receive loop...")
         while True:
             # Receive messages from client
-            data = await websocket.receive_json()
+            try:
+                raw_data = await websocket.receive()
+                logger.info(f"WebSocket raw received: {raw_data}")
+            except Exception as recv_err:
+                logger.error(f"Error receiving from WebSocket: {recv_err}")
+                break
 
-            message_type = data.get("type", "message")
+            # Parse JSON from text frame
+            if "text" in raw_data:
+                import json
+                try:
+                    data = json.loads(raw_data["text"])
+                except json.JSONDecodeError as je:
+                    logger.error(f"Failed to parse JSON: {je}, raw: {raw_data['text'][:200]}")
+                    continue
+            else:
+                data = raw_data
+
+            logger.info(f"WebSocket parsed data: {data}")
+
+            message_type = data.get("type", "message") if isinstance(data, dict) else "message"
+            logger.info(f"Message type: {message_type}")
 
             if message_type == "message":
                 user_message = data.get("message", "")
                 if not user_message:
                     continue
 
-                # Get or create the graph
-                graph = get_constructor_session_graph(session_id)
-                resolved_creator_id = _resolved_creator_id(data.get("creator_id"), session_id)
+                # Get session
+                session = get_constructor_session(session_id)
+                resolved_creator_id = _resolve_creator_id(data.get("creator_id"), session_id)
 
-                # Get current state
+                # Store creator_id in session for future use
+                if resolved_creator_id:
+                    session["creator_id"] = resolved_creator_id
+
+                # Build messages list - include creator_id context at the beginning
+                from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+
+                messages = []
+
+                # Add creator_id context as first message if available
+                if session.get("creator_id"):
+                    messages.append(SystemMessage(content=f"CREATOR_ID_CONTEXT: The current creator_id is {session['creator_id']}. "
+                                   f"When you delegate to the ingestion-sub-agent, you must include this numeric value "
+                                   f"in your task instruction so the sub-agent can call get_uploaded_files({session['creator_id']})."))
+
+                # Add existing conversation history (convert dicts to proper Message objects)
+                for msg in session["messages"]:
+                    if isinstance(msg, dict):
+                        if msg.get("role") == "user":
+                            messages.append(HumanMessage(content=msg["content"]))
+                        elif msg.get("role") == "assistant":
+                            messages.append(AIMessage(content=msg["content"]))
+                    elif isinstance(msg, (HumanMessage, AIMessage, SystemMessage)):
+                        messages.append(msg)
+
+                # Add the current user message
+                messages.append(HumanMessage(content=user_message))
+
+                # Update session messages (without the context prefix - that's added dynamically)
+                session["messages"].append({
+                    "role": "user",
+                    "content": user_message,
+                })
+
+                # Prepare input for the agent - LangGraph expects proper state dict
+                agent_input = {"messages": messages}
+
+                logger.info(f"Processing message for session {session_id}")
+                logger.info(f"Agent input: {agent_input}")
+
+                # Stream the agent execution with subgraph support
                 try:
-                    current_state = graph.get_state()
-                    if current_state is None:
-                        # Initialize new session
-                        current_state = create_initial_constructor_state(
-                            session_id=session_id,
-                            creator_id=resolved_creator_id,
-                        )
-                    elif not current_state.get("creator_id") and resolved_creator_id is not None:
-                        current_state = {**current_state, "creator_id": resolved_creator_id}
-                except Exception:
-                    current_state = create_initial_constructor_state(
-                        session_id=session_id,
-                        creator_id=resolved_creator_id,
-                    )
-
-                # Add user message to state
-                messages = current_state.get("messages", [])
-                messages = append_user_message(messages, user_message)
-
-                # Stream the graph execution
-                try:
-                    await manager.send_status(
-                        session_id,
-                        "Thinking...",
-                        phase="processing",
-                    )
-                    # Prevent duplicate assistant payloads across multiple node
-                    # events in the same user turn.
-                    streamed_assistant_hashes: set[str] = set()
-
                     trace_config = build_trace_config(
                         thread_id=session_id,
                         tags=["constructor", "websocket"],
@@ -213,63 +269,186 @@ async def constructor_websocket(
                             "session_id": session_id,
                             "creator_id": resolved_creator_id,
                         },
+                        config={"recursion_limit": 1000},  # Increase recursion limit for deepagents
                     )
 
-                    async for event in graph.stream(
-                        {**current_state, "messages": messages},
+                    # Track subagent state for the stream
+                    current_subagent = None
+                    logger.info("Starting deepagent stream with astream_events...")
+                    final_response_content = ""
+                    current_ai_message_id = None
+                    accumulated_tokens = ""
+
+                    # Track subagent state
+                    active_subagents = {}  # subagent_id -> info
+                    pending_tools = {}  # tool_call_id -> tool_name
+
+                    # Use astream_events for detailed event streaming
+                    async for event in main_agent.astream_events(
+                        agent_input,
                         config=trace_config,
+                        version="v1",
                     ):
-                        # Stream events to client
-                        for node_name, node_output in event.items():
-                            if node_output and isinstance(node_output, dict):
-                                # Extract and send any AI messages
-                                node_messages = node_output.get("messages", [])
-                                content = latest_assistant_after_last_user(node_messages)
-                                normalized_content = content.strip() if content else ""
-                                if normalized_content:
-                                    content_hash = hashlib.sha256(normalized_content.encode("utf-8")).hexdigest()
-                                else:
-                                    content_hash = ""
-                                if normalized_content and content_hash not in streamed_assistant_hashes:
-                                    stream_id = f"{session_id}:{content_hash[:12]}"
-                                    # Stream token by token (chunked)
-                                    chunk_size = 10
-                                    for i in range(0, len(normalized_content), chunk_size):
-                                        chunk = normalized_content[i:i + chunk_size]
-                                        await manager.send_token(
+                        event_type = event.get("event")
+                        event_name = event.get("name", "")
+                        event_data = event.get("data", {})
+
+                        logger.debug(f"Event: {event_type} | {event_name}")
+
+                        # Token-by-token streaming from LLM
+                        if event_type == "on_chat_model_stream":
+                            content_chunk = event_data.get("chunk", "")
+                            if hasattr(content_chunk, "content"):
+                                chunk_content = content_chunk.content
+                                if isinstance(chunk_content, str) and chunk_content:
+                                    # Stream each token/character
+                                    accumulated_tokens += chunk_content
+                                    await manager.send_token(
+                                        session_id,
+                                        chunk_content,
+                                        is_first=(len(accumulated_tokens) == len(chunk_content)),
+                                        is_last=False,
+                                    )
+
+                        # LLM finished - send complete message
+                        elif event_type == "on_chat_model_end":
+                            output = event_data.get("output")
+                            if output:
+                                if hasattr(output, "content"):
+                                    final_response_content = output.content
+                                elif isinstance(output, dict) and "content" in output:
+                                    final_response_content = output["content"]
+
+                        # Tool call started
+                        elif event_type == "on_tool_start":
+                            tool_name = event_data.get("input", {}).get("name", event_name)
+                            tool_args = event_data.get("input", {}).get("args", {})
+                            tool_call_id = event_data.get("run_id")
+
+                            if tool_name:
+                                pending_tools[tool_call_id] = tool_name
+                                await manager.send_tool_call(
+                                    session_id,
+                                    tool=tool_name,
+                                    args=tool_args if isinstance(tool_args, dict) else {},
+                                    agent=current_subagent or "Main Coordinator",
+                                )
+
+                                # Handle write_todos tool specifically
+                                if tool_name == "write_todos" and "todos" in tool_args:
+                                    todos_list = tool_args["todos"]
+                                    await manager.send_todo_update(
+                                        session_id,
+                                        [{"id": str(i), "task": str(t.get("content", t)), "status": t.get("status", "pending")}
+                                             for i, t in enumerate(todos_list)]
+                                    )
+
+                                # Check if this is a subagent delegation (task tool)
+                                if tool_name == "task":
+                                    subagent_type = tool_args.get("subagent_type", "Unknown")
+                                    subagent_id = tool_call_id or f"subagent_{len(active_subagents)}"
+                                    active_subagents[subagent_id] = {
+                                        "type": subagent_type,
+                                        "description": tool_args.get("description", ""),
+                                        "started_at": event_data.get("time"),
+                                    }
+                                    await manager.send_subagent_start(
+                                        session_id,
+                                        subagent_id,
+                                        subagent_type,
+                                        tool_args.get("description", ""),
+                                    )
+                                    current_subagent = subagent_type
+                                    await manager.send_agent_change(session_id, subagent_type, True)
+
+                        # Tool ended
+                        elif event_type == "on_tool_end":
+                            tool_name = event_name
+                            tool_call_id = event_data.get("run_id")
+                            tool_output = event_data.get("output", "")
+
+                            # Resolve tool name from pending if needed
+                            if tool_call_id and tool_call_id in pending_tools:
+                                tool_name = pending_tools.pop(tool_call_id)
+
+                            await manager.send_tool_result(
+                                session_id,
+                                tool=tool_name,
+                                result=str(tool_output)[:1000],  # Truncate large outputs
+                                agent=current_subagent or "Main Coordinator",
+                            )
+
+                            # Check if subagent completed
+                            if tool_name == "task" and tool_call_id in active_subagents:
+                                subagent_info = active_subagents.pop(tool_call_id)
+                                await manager.send_subagent_complete(
+                                    session_id,
+                                    tool_call_id,
+                                    result=str(tool_output)[:500] if tool_output else None,
+                                )
+                                if not active_subagents:
+                                    current_subagent = None
+                                    await manager.send_agent_change(session_id, "Main Coordinator", False)
+
+                        # Chain/node ended - check for state updates like todos
+                        elif event_type == "on_chain_end":
+                            # Check if the output contains todos
+                            output = event_data.get("output", {})
+                            if isinstance(output, dict):
+                                if "todos" in output:
+                                    todos = output["todos"]
+                                    await manager.send_todo_update(
+                                        session_id,
+                                        [{"id": str(i), "task": str(t), "status": "pending"}
+                                             for i, t in enumerate(todos)]
+                                    )
+
+                                # Also check nested output
+                                for key, value in output.items():
+                                    if isinstance(value, dict) and "todos" in value:
+                                        todos = value["todos"]
+                                        await manager.send_todo_update(
                                             session_id,
-                                            chunk,
-                                            is_first=(i == 0),
-                                            is_last=(i + chunk_size >= len(normalized_content)),
-                                            stream_id=stream_id,
+                                            [{"id": str(i), "task": str(t), "status": "pending"}
+                                                 for i, t in enumerate(todos)]
                                         )
-                                    streamed_assistant_hashes.add(content_hash)
 
-                                # Send progress updates
-                                progress = node_output.get("progress")
-                                if progress is not None:
-                                    await manager.send_status(
-                                        session_id,
-                                        f"Progress: {int(progress * 100)}%",
-                                        progress=progress,
-                                        phase=node_output.get("phase", "working"),
-                                    )
+                    # Send any remaining accumulated tokens as complete
+                    if accumulated_tokens and accumulated_tokens != final_response_content:
+                        await manager.send_token(
+                            session_id,
+                            "",
+                            is_first=False,
+                            is_last=True,
+                        )
 
-                                # Send any validation results
-                                if "validation_passed" in node_output:
-                                    await manager.broadcast_to_session(
-                                        session_id,
-                                        {
-                                            "type": "validation",
-                                            "passed": node_output.get("validation_passed", False),
-                                            "readiness_score": node_output.get("readiness_score", 0),
-                                            "errors": node_output.get("validation_errors", []),
-                                            "warnings": node_output.get("validation_warnings", []),
-                                        },
-                                    )
+                    # Complete any pending subagent
+                    if current_subagent:
+                        await manager.send_subagent_complete(session_id, current_subagent)
+
+                    # Store final response in session
+                    if final_response_content:
+                        session["messages"].append({
+                            "role": "assistant",
+                            "content": final_response_content,
+                        })
+
+                    # Send completion signal
+                    await manager.broadcast_to_session(
+                        session_id,
+                        {"type": "line_break"}
+                    )
+
+                    await manager.broadcast_to_session(
+                        session_id,
+                        {"type": "stream_complete"}
+                    )
+
+                    current_source = ""
+                    mid_line = False
 
                 except Exception as e:
-                    logger.error(f"Error in constructor stream: {e}")
+                    logger.error(f"Error in constructor stream: {e}", exc_info=True)
                     if _is_llm_quota_error(e):
                         fallback = _llm_unavailable_message()
                         await manager.send_token(
@@ -296,16 +475,7 @@ async def constructor_websocket(
 
             elif message_type == "start":
                 # Initialize a new session
-                get_constructor_session_graph(session_id)
-                create_initial_constructor_state(
-                    session_id=session_id,
-                    creator_id=_resolved_creator_id(data.get("creator_id"), session_id),
-                    course_info={
-                        "title": data.get("course_title"),
-                        "description": data.get("course_description"),
-                        "difficulty": data.get("difficulty", "beginner"),
-                    } if data.get("course_title") else None,
-                )
+                get_constructor_session(session_id)
 
                 await manager.send_token(
                     session_id,
@@ -331,7 +501,7 @@ async def constructor_websocket(
         manager.disconnect(session_id)
         logger.info(f"Constructor WebSocket disconnected for session: {session_id}")
     except Exception as e:
-        logger.error(f"Error in constructor WebSocket: {e}")
+        logger.error(f"Error in constructor WebSocket: {e}", exc_info=True)
         manager.disconnect(session_id)
 
 
@@ -348,25 +518,24 @@ async def start_constructor_session(
     """
     Start a new course construction session with the Constructor Agent.
 
-    This initializes a new LangGraph session for building a course.
+    This initializes a new deepagents session for building a course.
     """
-    import time
-
     session_id = f"constructor_{current_creator.id}_{int(time.time())}"
 
-    # Create initial state
-    create_initial_constructor_state(
-        session_id=session_id,
-        creator_id=current_creator.id,
-        course_info={
-            "title": request.course_title,
-            "description": request.course_description,
-            "difficulty": request.difficulty,
-        } if request.course_title else None,
-    )
+    # Initialize session
+    get_constructor_session(session_id)
 
-    # Initialize graph/session for subsequent websocket-driven interaction.
-    get_constructor_session_graph(session_id)
+    # Add initial context if provided
+    if request.course_title:
+        session = get_constructor_session(session_id)
+        session["messages"].append({
+            "role": "user",
+            "content": (
+                f"I want to create a course titled '{request.course_title}'. "
+                f"Description: {request.course_description or 'N/A'}. "
+                f"Difficulty level: {request.difficulty}."
+            ),
+        })
 
     return {
         "session_id": session_id,
@@ -390,25 +559,16 @@ async def constructor_chat(
     For streaming responses, use the WebSocket endpoint instead.
     This returns a complete response (non-streaming).
     """
-    graph = get_constructor_session_graph(session_id)
+    session = get_constructor_session(session_id)
+
+    # Add user message
+    session["messages"].append({
+        "role": "user",
+        "content": request.message,
+    })
 
     try:
-        # Get current state
-        current_state = graph.get_state()
-        if current_state is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Session not found. Please start a new session."
-            )
-
-        # Add user message
-        if not current_state.get("creator_id"):
-            current_state = {**current_state, "creator_id": int(current_creator.id)}
-
-        messages = current_state.get("messages", [])
-        messages = append_user_message(messages, request.message)
-
-        # Invoke graph
+        # Invoke agent (non-streaming)
         trace_config = build_trace_config(
             thread_id=session_id,
             tags=["constructor", "rest"],
@@ -418,22 +578,36 @@ async def constructor_chat(
                 "creator_id": current_creator.id,
             },
         )
-        result = await graph.invoke({**current_state, "messages": messages}, config=trace_config)
+
+        result = await main_agent.ainvoke(
+            {"messages": session["messages"][:]},
+            config=trace_config,
+        )
 
         # Extract AI response
-        response = latest_assistant_content(result.get("messages", [])) or "I understand. Please continue."
+        response_messages = result.get("messages", [])
+        response = ""
+        for msg in response_messages:
+            if isinstance(msg, dict):
+                if msg.get("role") == "assistant":
+                    response = msg.get("content", "")
+            elif hasattr(msg, "content"):
+                response = str(msg.content)
+
+        # Add assistant response to session
+        if response:
+            session["messages"].append({
+                "role": "assistant",
+                "content": response,
+            })
 
         return {
             "session_id": session_id,
-            "response": response,
-            "construction_phase": result.get("phase", "info_gathering"),
-            "progress": result.get("progress", 0),
+            "response": response or "I understand. Please continue.",
         }
 
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"Error in constructor chat: {e}")
+        logger.error(f"Error in constructor chat: {e}", exc_info=True)
         if _is_llm_quota_error(e):
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -460,33 +634,14 @@ async def upload_materials(
     """
     Upload course materials (PDFs, slides, videos) for processing.
 
-    Files are stored and the Ingestion Agent is triggered.
+    Files are stored and can be processed by the Ingestion Sub-Agent.
     Supports chunked uploads for large files.
     """
     import uuid
 
     from datetime import datetime
 
-    from app.agents.constructor.tools.ingestion import (
-        chunk_content_by_semantic,
-        ingest_docx,
-        ingest_pdf,
-        ingest_ppt,
-        ingest_video,
-    )
-
     uploaded_files = []
-    graph = get_constructor_session_graph(session_id)
-    current_state = graph.get_state()
-    if current_state is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Session not found. Please start a new session.",
-        )
-
-    state_uploaded_files = list(current_state.get("uploaded_files", []))
-    state_processed_files = list(current_state.get("processed_files", []))
-    state_content_chunks = list(current_state.get("content_chunks", []))
 
     # Create upload directory
     upload_dir = Path(settings.UPLOAD_PATH) / "constructor" / str(current_creator.id)
@@ -519,143 +674,19 @@ async def upload_materials(
                     file_size += len(chunk)
                     f.write(chunk)
 
-            normalized_file_type = {
-                ".pdf": "pdf",
-                ".ppt": "ppt",
-                ".pptx": "pptx",
-                ".docx": "docx",
-                ".txt": "text",
-                ".mp4": "video",
-                ".mov": "video",
-                ".avi": "video",
-            }.get(file_ext, file_ext[1:])
-
-            course_id_for_ingestion = current_state.get("course_id") or 0
-
-            state_file = {
-                "file_id": file_id,
-                "original_filename": file.filename,
-                "file_path": str(file_path),
-                "file_type": normalized_file_type,
-                "size_bytes": file_size,
-                "status": "pending",
-                "error_message": None,
-            }
-            state_uploaded_files.append(state_file)
-
-            # Trigger ingestion based on file type
-            # NOTE: Video processing is intentionally deferred to the ingestion
-            # graph to keep upload requests fast and avoid long blocking turns.
-            ingestion_result = None
-            deferred_video_processing = False
-            if file_ext == ".pdf":
-                ingestion_result = await ingest_pdf.ainvoke(
-                    {
-                        "file_path": str(file_path),
-                        "course_id": course_id_for_ingestion,
-                    }
-                )
-            elif file_ext in (".ppt", ".pptx"):
-                ingestion_result = await ingest_ppt.ainvoke(
-                    {
-                        "file_path": str(file_path),
-                        "course_id": course_id_for_ingestion,
-                    }
-                )
-            elif file_ext == ".docx":
-                ingestion_result = await ingest_docx.ainvoke(
-                    {
-                        "file_path": str(file_path),
-                        "course_id": course_id_for_ingestion,
-                    }
-                )
-            elif file_ext in (".mp4", ".mov", ".avi"):
-                deferred_video_processing = True
-            elif file_ext == ".txt":
-                # Simple text ingestion
-                with open(file_path, "r", encoding="utf-8", errors="ignore") as txt_file:
-                    text_content = txt_file.read()
-                ingestion_result = {
-                    "success": True,
-                    "file_id": file_id,
-                    "file_type": "text",
-                    "pages_or_slides": 1,
-                    "content": text_content,
-                    "metadata": {
-                        "course_id": course_id_for_ingestion,
-                        "original_filename": file.filename,
-                    },
-                }
-
-            if deferred_video_processing:
-                state_uploaded_files[-1] = {
-                    **state_file,
-                    "status": "pending",
-                    "error_message": None,
-                }
-                uploaded_files.append({
-                    "file_id": file_id,
-                    "filename": file.filename,
-                    "size": file_size,
-                    "type": file_ext[1:],
-                    "status": "queued",
-                    "chunks": 0,
-                    "message": "Video queued for processing in the ingestion step.",
-                })
-                continue
-
-            result_success = bool(ingestion_result and ingestion_result.get("success"))
-            result_error = ingestion_result.get("error") if ingestion_result else "Unknown ingestion error"
-            result_content = ingestion_result.get("content", "") if ingestion_result else ""
-            created_chunks = 0
-
-            if result_success and result_content:
-                chunk_result = await chunk_content_by_semantic.ainvoke(
-                    {
-                        "content": result_content,
-                        "min_chunk_size": 200,
-                        "max_chunk_size": 1500,
-                    }
-                )
-                chunks = chunk_result.get("chunks", [])
-                for chunk in chunks:
-                    chunk["source_file"] = file_id
-                    chunk["chunk_type"] = chunk.get("chunk_type", "semantic")
-                created_chunks = len(chunks)
-                state_content_chunks.extend(chunks)
-
-            if result_success:
-                state_uploaded_files[-1] = {
-                    **state_file,
-                    "status": "completed",
-                    "error_message": None,
-                }
-                processed_file = {
-                    **state_file,
-                    "status": "completed",
-                }
-                state_processed_files.append(processed_file)
-            else:
-                state_uploaded_files[-1] = {
-                    **state_file,
-                    "status": "error",
-                    "error_message": str(result_error),
-                }
-
             uploaded_files.append({
                 "file_id": file_id,
                 "filename": file.filename,
+                "path": str(file_path),
                 "size": file_size,
                 "type": file_ext[1:],  # Remove dot
-                "status": "processed" if result_success else "error",
-                "chunks": created_chunks,
-                **({"error": str(result_error)} if not result_success else {}),
+                "status": "uploaded",
             })
 
         except HTTPException:
             raise
         except Exception as e:
-            logger.error(f"Error uploading file {file.filename}: {e}")
+            logger.error(f"Error uploading file {file.filename}: {e}", exc_info=True)
             try:
                 if file_path.exists():
                     file_path.unlink()
@@ -669,22 +700,18 @@ async def upload_materials(
                 "error": str(e),
             })
 
-    graph.update_state(
-        {
-            "uploaded_files": state_uploaded_files,
-            "processed_files": state_processed_files,
-            "content_chunks": state_content_chunks,
-            "phase": "ingestion_complete" if state_processed_files else "upload",
-            "updated_at": datetime.utcnow().isoformat(),
-        }
-    )
+    # Store file info in session for the agent to access
+    session = get_constructor_session(session_id)
+    if "uploaded_files" not in session:
+        session["uploaded_files"] = []
+    session["uploaded_files"].extend(uploaded_files)
 
     return {
         "session_id": session_id,
         "uploaded_files": uploaded_files,
         "total_files": len(uploaded_files),
         "status": "uploaded",
-        "processed_files": len([f for f in uploaded_files if f.get("status") == "processed"]),
+        "message": f"Uploaded {len(uploaded_files)} file(s). You can now tell the agent to process them.",
     }
 
 
@@ -695,36 +722,17 @@ async def get_session_status(
     settings: Settings = Depends(get_settings)
 ) -> dict[str, Any]:
     """Get the current status of a construction session."""
-    graph = get_constructor_session_graph(session_id)
+    session = get_constructor_session(session_id)
 
-    try:
-        state = graph.get_state()
-        if state is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Session not found"
-            )
+    message_count = len(session.get("messages", []))
+    file_count = len(session.get("uploaded_files", []))
 
-        return {
-            "session_id": session_id,
-            "status": state.get("phase", "unknown"),
-            "progress": state.get("progress", 0),
-            "uploaded_files_count": len(state.get("uploaded_files", [])),
-            "topics_created": len(state.get("topics", [])),
-            "questions_created": len(state.get("quiz_questions", [])),
-            "validation_passed": state.get("validation_passed"),
-            "readiness_score": state.get("readiness_score", 0),
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting session status: {e}")
-        return {
-            "session_id": session_id,
-            "status": "error",
-            "error": str(e),
-        }
+    return {
+        "session_id": session_id,
+        "status": "active",
+        "message_count": message_count,
+        "uploaded_files_count": file_count,
+    }
 
 
 @router.post("/course/finalize")
@@ -735,8 +743,6 @@ async def finalize_course(
 ) -> dict[str, Any]:
     """
     Finalize and publish a course.
-
-    Triggers the Validation Agent before publishing.
     """
 
     async with get_constructor_session() as session:
@@ -755,8 +761,7 @@ async def finalize_course(
                 detail="Course not found"
             )
 
-        # In a real implementation, this would trigger validation
-        # and update the course status
+        # Update the course status
         await session.execute(
             update(Course)
             .where(Course.id == request.course_id)
