@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from app.core.config import Settings, get_settings
 from app.db.constructor.models import Course, Creator
-from app.db.base import get_constructor_session
+from app.db.base import get_constructor_session as get_constructor_db_session
 from app.api.auth import get_current_creator
 from app.api.websocket import manager
 from app.observability.langsmith import build_trace_config
@@ -125,7 +125,11 @@ class FileUploadResponse(BaseModel):
 
 
 class ConstructorSessionStart(BaseModel):
-    """Start a new constructor session."""
+    """Start a new constructor session.
+
+    A course is automatically created when the session starts.
+    You can provide initial course details or update them later.
+    """
     course_title: str | None = None
     course_description: str | None = None
     difficulty: str = "beginner"
@@ -158,6 +162,38 @@ def get_constructor_session(session_id: str) -> dict[str, Any]:
             "thread_id": session_id,
         }
     return _constructor_sessions[session_id]
+
+
+# ==============================================================================
+# Helper Functions for Todo Parsing
+# ==============================================================================
+
+async def _send_parsed_todos(session_id: str, todos: Any, manager) -> None:
+    """Parse todos in any format and send to frontend."""
+    if todos is None:
+        return
+
+    parsed_todos = []
+    for i, t in enumerate(todos):
+        if isinstance(t, dict):
+            # deepagents format: {"content": "...", "status": "..."}
+            content = t.get("content", str(t))
+            status = t.get("status", "pending")
+        elif isinstance(t, str):
+            content = t
+            status = "pending"
+        else:
+            content = str(t)
+            status = "pending"
+
+        parsed_todos.append({
+            "id": str(i),
+            "task": content,
+            "status": status
+        })
+
+    logger.info(f"_send_parsed_todos: Sending {len(parsed_todos)} todos to frontend")
+    await manager.send_todo_update(session_id, parsed_todos)
 
 
 # ==============================================================================
@@ -230,16 +266,25 @@ async def constructor_websocket(
                 if resolved_creator_id:
                     session["creator_id"] = resolved_creator_id
 
-                # Build messages list - include creator_id context at the beginning
+                # Build messages list - include creator_id and course_id context at the beginning
                 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
                 messages = []
 
-                # Add creator_id context as first message if available
+                # Add creator_id and course_id context as first message
+                # Note: course_id is always available since session start auto-creates the course
+                context_parts = []
                 if session.get("creator_id"):
-                    messages.append(SystemMessage(content=f"CREATOR_ID_CONTEXT: The current creator_id is {session['creator_id']}. "
-                                   f"When you delegate to the ingestion-sub-agent, you must include this numeric value "
-                                   f"in your task instruction so the sub-agent can call get_uploaded_files({session['creator_id']})."))
+                    context_parts.append(f"creator_id is {session['creator_id']}")
+                if session.get("course_id"):
+                    context_parts.append(f"course_id is {session['course_id']}")
+
+                if context_parts:
+                    context_msg = f"SESSION_CONTEXT: The current {', '.join(context_parts)}. "
+                    if session.get("course_id"):
+                        context_msg += f"Files are stored in uploads/constructor/{session.get('creator_id', 'X')}/{session['course_id']}/. "
+                        context_msg += f"When delegating to ingestion-sub-agent, include both creator_id ({session['creator_id']}) AND course_id ({session['course_id']}) so it can call get_uploaded_files(creator_id, course_id)."
+                    messages.append(SystemMessage(content=context_msg))
 
                 # Add existing conversation history (convert dicts to proper Message objects)
                 for msg in session["messages"]:
@@ -341,6 +386,10 @@ async def constructor_websocket(
                     ):
                         event_type = event.get("event")
                         event_name = event.get("name", "")
+
+                        # Debug: Log ALL events temporarily to see what we're getting
+                        if event_type not in ("on_chat_model_start", "on_chat_model_stream", "on_chat_model_end"):
+                            logger.info(f"Event: {event_type}, name: {event_name}")
                         event_data = event.get("data", {})
 
                         # Enhanced debug logging for key events
@@ -434,27 +483,33 @@ async def constructor_websocket(
                                 # Debug: log all tool starts temporarily
                                 logger.info(f"Tool start: {tool_name}, args keys: {list(tool_args.keys()) if isinstance(tool_args, dict) else 'not a dict'}")
 
-                                # Debug: log write_todos specifically
+                                # Debug: log write_todos specifically - CRITICAL FOR IMMEDIATE UPDATE
                                 if tool_name == "write_todos":
                                     logger.info(f"write_todos detected! tool_args type={type(tool_args)}, value={tool_args}")
+                                    # Handle write_todos IMMEDIATELY to update frontend
+                                    # The todos can be in different formats depending on how deepagents passes them
+                                    todos_list = None
+                                    if isinstance(tool_args, dict):
+                                        # Try different keys where todos might be
+                                        for key in ["todos", "arg__todos", "input", "__arg__todos"]:
+                                            if key in tool_args:
+                                                todos_list = tool_args[key]
+                                                logger.info(f"write_todos: found todos in key '{key}': {todos_list}")
+                                                break
 
-                                # Skip internal tools from UI
+                                    logger.info(f"write_todos: extracted todos_list type={type(todos_list)}, value={todos_list}")
+
+                                    # Parse and send todos immediately using helper
+                                    if todos_list is not None:
+                                        await _send_parsed_todos(session_id, todos_list, manager)
+
+                                # Skip internal tools from UI (but write_todos is handled above)
                                 if tool_name not in ("task", "write_todos", "read_file", "write_file", "edit_file", "glob", "grep", "ls", "execute"):
                                     await manager.send_tool_call(
                                         session_id,
                                         tool=tool_name,
                                         args=tool_args if isinstance(tool_args, dict) else {},
                                         agent=current_subagent or "Main Coordinator",
-                                    )
-
-                                # Handle write_todos tool specifically
-                                if tool_name == "write_todos" and "todos" in tool_args:
-                                    todos_list = tool_args["todos"]
-                                    logger.info(f"Sending todo_update with {len(todos_list)} items")
-                                    await manager.send_todo_update(
-                                        session_id,
-                                        [{"id": str(i), "task": str(t.get("content", t)), "status": t.get("status", "pending")}
-                                             for i, t in enumerate(todos_list)]
                                     )
 
                                 # Check if this is a subagent delegation (task tool)
@@ -513,26 +568,54 @@ async def constructor_websocket(
                                     await manager.send_agent_change(session_id, "Main Coordinator", False)
                                     logger.info(f"Subagent completed via chain_end: {subagent_display}")
 
-                            # Check if the output contains todos
+                            # IMPORTANT: Check for todos in chain output - this catches write_todos updates
                             output = event_data.get("output", {})
                             if isinstance(output, dict):
+                                # Direct todos in output
                                 if "todos" in output:
                                     todos = output["todos"]
-                                    await manager.send_todo_update(
-                                        session_id,
-                                        [{"id": str(i), "task": str(t), "status": "pending"}
-                                             for i, t in enumerate(todos)]
-                                    )
+                                    logger.info(f"Chain_end: Found direct todos: {todos}")
+                                    await _send_parsed_todos(session_id, todos, manager)
+
+                                # Check in messages array (deepagents stores state updates here)
+                                if "messages" in output:
+                                    messages = output["messages"]
+                                    # Handle Overwrite objects and other LangGraph state objects safely
+                                    messages_list = []
+                                    try:
+                                        # Try direct iteration first
+                                        if isinstance(messages, list):
+                                            messages_list = messages
+                                        elif hasattr(messages, '__iter__') and not isinstance(messages, (str, dict)):
+                                            # Check if it's an Overwrite-like object with actual values
+                                            attr_val = getattr(messages, 'values', None)
+                                            if attr_val is not None and callable(attr_val):
+                                                # It's a dict-like object, call values() method
+                                                val_result = attr_val()
+                                                if hasattr(val_result, '__iter__'):
+                                                    messages_list = list(val_result)
+                                            else:
+                                                # Try to convert to list, ignoring type errors for Overwrite objects
+                                                messages_list = list(messages)  # type: ignore[arg-type, call-arg]
+                                    except (TypeError, AttributeError):
+                                        logger.info(f"Chain_end: Could not iterate messages, type={type(messages)}")
+
+                                    for msg in messages_list:
+                                        # Check for ToolMessage with todos
+                                        if hasattr(msg, "content") and isinstance(msg.content, dict):
+                                            if "todos" in msg.content:
+                                                logger.info(f"Chain_end: Found todos in ToolMessage: {msg.content.get('todos')}")
+                                                await _send_parsed_todos(session_id, msg.content["todos"], manager)
+                                        elif isinstance(msg, dict):
+                                            if "todos" in msg:
+                                                logger.info(f"Chain_end: Found todos in message dict: {msg['todos']}")
+                                                await _send_parsed_todos(session_id, msg["todos"], manager)
 
                                 # Also check nested output
                                 for key, value in output.items():
                                     if isinstance(value, dict) and "todos" in value:
-                                        todos = value["todos"]
-                                        await manager.send_todo_update(
-                                            session_id,
-                                            [{"id": str(i), "task": str(t), "status": "pending"}
-                                                 for i, t in enumerate(todos)]
-                                        )
+                                        logger.info(f"Chain_end: Found todos in nested output[{key}]: {value['todos']}")
+                                        await _send_parsed_todos(session_id, value["todos"], manager)
 
                     # Complete any pending subagent
                     if current_subagent:
@@ -630,16 +713,47 @@ async def start_constructor_session(
     """
     Start a new course construction session with the Constructor Agent.
 
-    This initializes a new deepagents session for building a course.
+    A course is automatically created when the session starts.
+    The course is created with default values that can be updated later.
     """
+    from sqlalchemy import select
+
+    # Generate session ID
     session_id = f"constructor_{current_creator.id}_{int(time.time())}"
 
-    # Initialize session
-    get_constructor_session(session_id)
+    # Auto-create a course for this session
+    # Use provided title or a default one
+    course_title = request.course_title or f"New Course {int(time.time())}"
+    course_description = request.course_description or "Course description will be updated during construction."
+
+    async with get_constructor_db_session() as db_session:
+        new_course = Course(
+            creator_id=current_creator.id,
+            title=course_title,
+            description=course_description,
+            difficulty=request.difficulty,
+            is_published=False,
+        )
+        db_session.add(new_course)
+        await db_session.commit()
+        await db_session.refresh(new_course)
+        course_id = new_course.id
+
+    logger.info(f"Auto-created course {course_id} for creator {current_creator.id} at session start")
+
+    # Initialize session with course_id
+    session = get_constructor_session(session_id)
+    session["creator_id"] = current_creator.id
+    session["course_id"] = course_id
+    session["course_title"] = course_title
+
+    # Create the course upload directory
+    upload_dir = settings.upload_absolute_path / "constructor" / str(current_creator.id) / str(course_id)
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Created upload directory: {upload_dir}")
 
     # Add initial context if provided
     if request.course_title:
-        session = get_constructor_session(session_id)
         session["messages"].append({
             "role": "user",
             "content": (
@@ -652,8 +766,10 @@ async def start_constructor_session(
     return {
         "session_id": session_id,
         "creator_id": current_creator.id,
+        "course_id": course_id,
+        "course_title": course_title,
         "message": WELCOME_MESSAGE,
-        "status": "info_gathering",
+        "status": "ready",
         "websocket_url": f"/api/v1/constructor/session/ws/{session_id}",
     }
 
@@ -740,13 +856,20 @@ async def constructor_chat(
 async def upload_materials(
     session_id: str,
     files: list[UploadFile],
+    course_id: int = Query(..., description="Course ID to associate files with. A course is auto-created at session start."),
     current_creator: Creator = Depends(get_current_creator),
     settings: Settings = Depends(get_settings)
 ) -> dict[str, Any]:
     """
     Upload course materials (PDFs, slides, videos) for processing.
 
-    Files are stored and can be processed by the Ingestion Sub-Agent.
+    Files are organized by: uploads/constructor/{creator_id}/{course_id}/
+    Each course has its own separate file storage.
+
+    Note: A course is automatically created when the session starts,
+    so course_id is always available.
+
+    Files can be processed by the Ingestion Sub-Agent.
     Supports chunked uploads for large files.
     """
     import uuid
@@ -756,10 +879,11 @@ async def upload_materials(
     uploaded_files = []
 
     # Create upload directory using absolute path
-    upload_dir = settings.upload_absolute_path / "constructor" / str(current_creator.id)
+    # Structure: uploads/constructor/{creator_id}/{course_id}/
+    upload_dir = settings.upload_absolute_path / "constructor" / str(current_creator.id) / str(course_id)
     upload_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info(f"[upload_materials] creator_id={current_creator.id}, upload_dir={upload_dir}")
+    logger.info(f"[upload_materials] creator_id={current_creator.id}, course_id={course_id}, upload_dir={upload_dir}")
 
     for file in files:
         # Generate unique file ID
@@ -795,6 +919,7 @@ async def upload_materials(
                 "size": file_size,
                 "type": file_ext[1:],  # Remove dot
                 "status": "uploaded",
+                "course_id": course_id,  # Include course_id in response
             })
 
         except HTTPException:
@@ -820,12 +945,17 @@ async def upload_materials(
         session["uploaded_files"] = []
     session["uploaded_files"].extend(uploaded_files)
 
+    # Store course_id in session for agent to use when calling tools
+    # Note: course_id is always set since session start auto-creates the course
+    session["course_id"] = course_id
+
     return {
         "session_id": session_id,
+        "course_id": course_id,
         "uploaded_files": uploaded_files,
         "total_files": len(uploaded_files),
         "status": "uploaded",
-        "message": f"Uploaded {len(uploaded_files)} file(s). You can now tell the agent to process them.",
+        "message": f"Uploaded {len(uploaded_files)} file(s) to course {course_id}. You can now tell the agent to process them.",
     }
 
 
@@ -859,7 +989,7 @@ async def finalize_course(
     Finalize and publish a course.
     """
 
-    async with get_constructor_session() as session:
+    async with get_constructor_db_session() as session:
         # Verify course belongs to creator without selecting optional/legacy columns.
         result = await session.execute(
             select(Course.id).where(
@@ -897,7 +1027,7 @@ async def list_courses(
 ) -> list[dict[str, Any]]:
     """List all courses for a creator."""
 
-    async with get_constructor_session() as session:
+    async with get_constructor_db_session() as session:
         result = await session.execute(
             select(
                 Course.id,
@@ -931,7 +1061,7 @@ async def get_course(
 ) -> dict[str, Any]:
     """Get a specific course by ID."""
 
-    async with get_constructor_session() as session:
+    async with get_constructor_db_session() as session:
         result = await session.execute(
             select(
                 Course.id,

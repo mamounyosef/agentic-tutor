@@ -10,7 +10,6 @@ from deepagents import create_deep_agent
 
 from app.agents.base.llm import get_llm
 from app.agents.constructor.tools.db_tools import (
-    initialize_course,
     save_module,
     save_unit,
     save_material,
@@ -91,11 +90,12 @@ validation_sub_agent = {
 
 # Create the main coordinator agent with all sub-agents
 # LangSmith tracing will automatically track all agent runs, tool calls, and sub-agent delegation
+# Note: Course is auto-created at session start, so initialize_course is not needed here
 main_agent = create_deep_agent(
     model=llm,
     system_prompt=MAIN_COORDINATOR_PROMPT,
     tools=[
-        initialize_course,  # Only direct DB access for main agent
+        # No direct database tools for main agent - all DB operations through sub-agents
     ],
     subagents=[
         structure_sub_agent,

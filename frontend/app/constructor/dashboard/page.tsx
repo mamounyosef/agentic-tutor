@@ -192,6 +192,7 @@ export default function ConstructorDashboard() {
   const [isLoading, setIsLoading] = useState(false)
   const [isConnected, setIsConnected] = useState(false)
   const [sessionId, setSessionId] = useState<string | null>(null)
+  const [courseId, setCourseId] = useState<number | null>(null)
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([])
   const [progress, setProgress] = useState(0)
   const [phase, setPhase] = useState("")
@@ -282,6 +283,7 @@ export default function ConstructorDashboard() {
       if (requestId !== initRequestIdRef.current) return
 
       setSessionId(response.session_id)
+      setCourseId(response.course_id)
 
       // Add welcome message
       setMessages([{
@@ -657,7 +659,10 @@ export default function ConstructorDashboard() {
   }
 
   const handleFileUpload = async (files: FileList) => {
-    if (!sessionId) return
+    if (!sessionId || !courseId) {
+      toast.error("Session not ready. Please wait...")
+      return
+    }
 
     const newFiles: UploadedFile[] = Array.from(files).map((file) => ({
       id: Date.now().toString() + Math.random(),
@@ -670,7 +675,7 @@ export default function ConstructorDashboard() {
     setUploadedFiles((prev) => [...prev, ...newFiles])
 
     try {
-      await constructorApi.uploadFiles(sessionId, Array.from(files))
+      await constructorApi.uploadFiles(sessionId, courseId, Array.from(files))
 
       // Update file statuses
       setUploadedFiles((prev) =>
@@ -957,7 +962,7 @@ export default function ConstructorDashboard() {
                   <CardTitle className="text-sm font-medium">Uploaded Files</CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <ScrollArea className="h-40">
+                  <ScrollArea className="h-20">
                     <div className="space-y-2">
                       {uploadedFiles.map((file) => (
                         <div

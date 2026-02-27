@@ -8,6 +8,7 @@ These tools use synchronous SQLAlchemy to avoid async/await issues with LangChai
 
 import json
 import logging
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from langchain_core.tools import tool
@@ -457,15 +458,15 @@ def save_quiz_question(
 
 
 @tool
-def get_uploaded_files(creator_id: int) -> str:
+def get_uploaded_files(creator_id: int, course_id: int) -> str:
     """
-    Get the list of uploaded files for a creator.
+    Get the list of uploaded files for a creator's course.
 
-    This tool reads the upload directory and returns all files that have been
-    uploaded by the creator, including their full paths for processing.
+    Files are organized by: uploads/constructor/{creator_id}/{course_id}/
 
     Args:
         creator_id: The ID of the creator (user)
+        course_id: The ID of the course (always available since session start auto-creates the course)
 
     Returns:
         JSON string with list of uploaded files and their paths
@@ -476,77 +477,63 @@ def get_uploaded_files(creator_id: int) -> str:
 
     settings = get_settings()
 
-    # Debug: Log all path information
-    logger.info(f"[get_uploaded_files] === DEBUG START ===")
-    logger.info(f"[get_uploaded_files] creator_id={creator_id}")
-    logger.info(f"[get_uploaded_files] UPLOAD_PATH setting: {settings.UPLOAD_PATH}")
-    logger.info(f"[get_uploaded_files] upload_absolute_path: {settings.upload_absolute_path}")
-    logger.info(f"[get_uploaded_files] Current working directory: {os.getcwd()}")
+    logger.info(f"[get_uploaded_files] creator_id={creator_id}, course_id={course_id}")
 
-    # Use the SAME absolute path as the upload endpoint
-    upload_dir = settings.upload_absolute_path / "constructor" / str(creator_id)
-    logger.info(f"[get_uploaded_files] target upload_dir: {upload_dir}")
-    logger.info(f"[get_uploaded_files] upload_dir exists: {upload_dir.exists()}")
+    # Base constructor directory
+    constructor_base = settings.upload_absolute_path / "constructor" / str(creator_id)
 
-    # List what's actually in the upload base
-    upload_base = settings.upload_absolute_path
-    if upload_base.exists():
-        logger.info(f"[get_uploaded_files] Contents of upload_base: {list(upload_base.iterdir())}")
-        constructor_dir = upload_base / "constructor"
-        if constructor_dir.exists():
-            logger.info(f"[get_uploaded_files] Contents of constructor: {list(constructor_dir.iterdir())}")
-    else:
-        logger.warning(f"[get_uploaded_files] upload_base does not exist: {upload_base}")
-
-    # Check alternative path: backend/uploads
-    backend_uploads = Path(__file__).parent.parent.parent / "uploads" / "constructor" / str(creator_id)
-    logger.info(f"[get_uploaded_files] Checking alternative path: {backend_uploads}, exists: {backend_uploads.exists()}")
-    if backend_uploads.exists():
-        logger.info(f"[get_uploaded_files] Alternative path HAS files: {list(backend_uploads.iterdir())}")
-
-    logger.info(f"[get_uploaded_files] === DEBUG END ===")
-
-    if not upload_dir.exists():
+    if not constructor_base.exists():
         result = {
             "success": True,
             "files": [],
-            "upload_dir": str(upload_dir),
-            "message": f"No upload directory found. Creator ID: {creator_id}, Upload dir: {upload_dir}"
+            "upload_dir": str(constructor_base),
+            "message": f"No upload directory found for creator {creator_id}"
         }
         return json.dumps(result)
 
     files = []
-    for file_path in upload_dir.iterdir():
-        if file_path.is_file():
-            filename = file_path.name
-            original_filename = filename
-            file_id = filename.split("_")[0] if "_" in filename else filename[:36]
 
-            parts = filename.split("_", 1)
-            if len(parts) > 1 and len(parts[0]) == 36:
-                original_filename = parts[1]
+    # Look for files in the specific course folder
+    course_dir = constructor_base / str(course_id)
+    logger.info(f"[get_uploaded_files] Looking in course_dir: {course_dir}")
 
-            file_ext = file_path.suffix.lower()
-            files.append({
-                "file_id": file_id,
-                "original_filename": original_filename,
-                "saved_filename": filename,
-                "full_path": str(file_path.absolute()),
-                "file_ext": file_ext[1:] if file_ext else "",
-                "size": file_path.stat().st_size,
-            })
+    if course_dir.exists():
+        for file_path in course_dir.iterdir():
+            if file_path.is_file():
+                files.append(_parse_file_info(file_path))
 
-    logger.info(f"[get_uploaded_files] Found {len(files)} files for creator_id={creator_id}: {[f['original_filename'] for f in files]}")
+    logger.info(f"[get_uploaded_files] Found {len(files)} files: {[f['original_filename'] for f in files]}")
 
     result = {
         "success": True,
-        "upload_dir": str(upload_dir),
         "creator_id": creator_id,
+        "course_id": course_id,
         "files": files,
         "total_files": len(files),
-        "message": f"Found {len(files)} uploaded file(s) at {upload_dir}"
+        "message": f"Found {len(files)} uploaded file(s) for creator {creator_id}, course {course_id}"
     }
     return json.dumps(result)
+
+
+def _parse_file_info(file_path: Path) -> dict:
+    """Helper to parse file information from a file path."""
+    filename = file_path.name
+    original_filename = filename
+    file_id = filename.split("_")[0] if "_" in filename else filename[:36]
+
+    parts = filename.split("_", 1)
+    if len(parts) > 1 and len(parts[0]) == 36:
+        original_filename = parts[1]
+
+    file_ext = file_path.suffix.lower()
+    return {
+        "file_id": file_id,
+        "original_filename": original_filename,
+        "saved_filename": filename,
+        "full_path": str(file_path.absolute()),
+        "file_ext": file_ext[1:] if file_ext else "",
+        "size": file_path.stat().st_size,
+    }
 
 
 @tool
