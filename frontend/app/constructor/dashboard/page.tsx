@@ -12,6 +12,15 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import { Progress } from "@/components/ui/progress"
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
+import {
   Zap,
   Upload,
   Send,
@@ -82,6 +91,14 @@ interface ToolResult {
   result: string
   agent: string
   timestamp: Date
+}
+
+interface QuestionModal {
+  isOpen: boolean
+  questionId: string | null
+  question: string
+  choices: string[]
+  otherValue: string
 }
 
 // Subagent Card Component
@@ -205,6 +222,20 @@ export default function ConstructorDashboard() {
   // New: Subagent tracking
   const [subagents, setSubagents] = useState<Map<string, Subagent>>(new Map())
   const [todos, setTodos] = useState<Todo[]>([])
+  // Question modal state
+  const [questionModal, setQuestionModal] = useState<{
+    isOpen: boolean
+    questionId: string | null
+    question: string
+    choices: string[]
+    otherValue: string
+  }>({
+    isOpen: false,
+    questionId: null,
+    question: "",
+    choices: [],
+    otherValue: "",
+  })
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -552,6 +583,15 @@ export default function ConstructorDashboard() {
       } else if (data.type === "todo_update") {
         // Todo list update
         setTodos(data.todos || [])
+      } else if (data.type === "question") {
+        // Structured question from agent - show as modal
+        setQuestionModal({
+          isOpen: true,
+          questionId: data.question_id || null,
+          question: data.question || "",
+          choices: data.choices || [],
+          otherValue: "",
+        })
       } else if (data.type === "validation") {
         // Validation complete
         if (data.passed) {
@@ -612,6 +652,51 @@ export default function ConstructorDashboard() {
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
+  }
+
+  const handleQuestionAnswer = (choice: string) => {
+    if (!wsRef.current || !questionModal.questionId) return
+
+    // Send the answer via WebSocket
+    wsRef.current.send(JSON.stringify({
+      type: "question_answer",
+      question_id: questionModal.questionId,
+      answer: choice,
+      answer_type: "choice",
+    }))
+
+    // Close the modal
+    setQuestionModal({
+      isOpen: false,
+      questionId: null,
+      question: "",
+      choices: [],
+      otherValue: "",
+    })
+  }
+
+  const handleOtherAnswer = () => {
+    if (!wsRef.current || !questionModal.questionId || !questionModal.otherValue.trim()) {
+      toast.error("Please enter your answer")
+      return
+    }
+
+    // Send the answer via WebSocket
+    wsRef.current.send(JSON.stringify({
+      type: "question_answer",
+      question_id: questionModal.questionId,
+      answer: questionModal.otherValue.trim(),
+      answer_type: "other",
+    }))
+
+    // Close the modal
+    setQuestionModal({
+      isOpen: false,
+      questionId: null,
+      question: "",
+      choices: [],
+      otherValue: "",
+    })
   }
 
   const handleSendMessage = async () => {
@@ -1227,6 +1312,57 @@ export default function ConstructorDashboard() {
           </div>
         </div>
       </div>
+
+      {/* Question Modal */}
+      <Dialog open={questionModal.isOpen} onOpenChange={(open) => !open && setQuestionModal(prev => ({ ...prev, isOpen: false }))}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-lg">Question</DialogTitle>
+            <DialogDescription className="text-base text-foreground">
+              {questionModal.question}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-4">
+            {/* Choice buttons */}
+            {questionModal.choices.map((choice, index) => (
+              <Button
+                key={index}
+                variant="outline"
+                className="w-full justify-start h-auto py-3 px-4 text-left"
+                onClick={() => handleQuestionAnswer(choice)}
+              >
+                <span className="flex items-center gap-3">
+                  <span className="w-6 h-6 rounded-full bg-primary/10 flex items-center justify-center text-xs font-medium">
+                    {index + 1}
+                  </span>
+                  <span>{choice}</span>
+                </span>
+              </Button>
+            ))}
+
+            {/* Other option with input */}
+            <div className="space-y-2 pt-2 border-t">
+              <Label className="text-sm text-muted-foreground">Other (type your answer):</Label>
+              <div className="flex gap-2">
+                <Input
+                  placeholder="Type your custom answer..."
+                  value={questionModal.otherValue}
+                  onChange={(e) => setQuestionModal(prev => ({ ...prev, otherValue: e.target.value }))}
+                  onKeyDown={(e) => e.key === "Enter" && handleOtherAnswer()}
+                  className="flex-1"
+                />
+                <Button
+                  onClick={handleOtherAnswer}
+                  disabled={!questionModal.otherValue.trim()}
+                  size="sm"
+                >
+                  Send
+                </Button>
+              </div>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

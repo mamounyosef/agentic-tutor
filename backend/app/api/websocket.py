@@ -335,6 +335,24 @@ class ConnectionManager:
             },
         )
 
+    async def send_question(
+        self,
+        session_id: str,
+        question_id: str,
+        question: str,
+        choices: list[str],
+    ) -> bool:
+        """Send structured question to frontend (displays as popup modal)."""
+        return await self.broadcast_to_session(
+            session_id,
+            {
+                "type": "question",
+                "question_id": question_id,
+                "question": question,
+                "choices": choices,
+            },
+        )
+
     def is_connected(self, session_id: str) -> bool:
         """
         Check if a session has an active connection.

@@ -19,6 +19,10 @@ from app.observability.langsmith import build_trace_config
 
 # Import Constructor agents
 from app.agents.constructor.main_agent.agent import main_agent
+from app.agents.constructor.tools.user_interaction_tools import (
+    submit_user_answer,
+    get_pending_question,
+)
 
 # Welcome message for new sessions
 WELCOME_MESSAGE = (
@@ -483,6 +487,33 @@ async def constructor_websocket(
                                 # Debug: log all tool starts temporarily
                                 logger.info(f"Tool start: {tool_name}, args keys: {list(tool_args.keys()) if isinstance(tool_args, dict) else 'not a dict'}")
 
+                                # Handle ask_user tool - send question to frontend as popup
+                                if tool_name == "ask_user":
+                                    import json
+                                    logger.info(f"ask_user detected! tool_args: {tool_args}")
+                                    # Extract question and choices from tool_args
+                                    question = tool_args.get("question", "")
+                                    choices = tool_args.get("choices", [])
+
+                                    # Try nested keys as well
+                                    if not question:
+                                        for key in ["arg__question", "input"]:
+                                            if key in tool_args and isinstance(tool_args[key], str):
+                                                question = tool_args[key]
+                                                break
+                                    if not choices:
+                                        for key in ["arg__choices", "input"]:
+                                            if key in tool_args and isinstance(tool_args[key], list):
+                                                choices = tool_args[key]
+                                                break
+
+                                    if question:
+                                        # Generate a temporary question_id for tracking
+                                        # The actual question_id will be in the tool output
+                                        temp_question_id = f"q_{int(time.time() * 1000)}"
+                                        await manager.send_question(session_id, temp_question_id, question, choices)
+                                        logger.info(f"Sent question popup: {question}")
+
                                 # Debug: log write_todos specifically - CRITICAL FOR IMMEDIATE UPDATE
                                 if tool_name == "write_todos":
                                     logger.info(f"write_todos detected! tool_args type={type(tool_args)}, value={tool_args}")
@@ -503,8 +534,8 @@ async def constructor_websocket(
                                     if todos_list is not None:
                                         await _send_parsed_todos(session_id, todos_list, manager)
 
-                                # Skip internal tools from UI (but write_todos is handled above)
-                                if tool_name not in ("task", "write_todos", "read_file", "write_file", "edit_file", "glob", "grep", "ls", "execute"):
+                                # Skip internal tools from UI (but write_todos and ask_user are handled above)
+                                if tool_name not in ("task", "write_todos", "ask_user", "read_file", "write_file", "edit_file", "glob", "grep", "ls", "execute"):
                                     await manager.send_tool_call(
                                         session_id,
                                         tool=tool_name,
@@ -679,6 +710,29 @@ async def constructor_websocket(
                     is_last=True,
                     stream_id=f"{session_id}:welcome",
                 )
+
+            elif message_type == "question_answer":
+                # Handle user's response to a structured question
+                question_id = data.get("question_id")
+                answer = data.get("answer")
+                answer_type = data.get("answer_type", "choice")  # "choice" or "other"
+
+                logger.info(f"Received answer for question {question_id}: {answer} (type: {answer_type})")
+
+                # Submit the answer to the pending question
+                success = submit_user_answer(question_id, answer, answer_type)
+
+                if success:
+                    await manager.send_status(
+                        session_id,
+                        "Answer received. Processing...",
+                        phase="processing",
+                    )
+                else:
+                    await manager.send_error(
+                        session_id,
+                        f"Question {question_id} not found or already expired",
+                    )
 
             elif message_type == "upload":
                 # Handle file upload notification

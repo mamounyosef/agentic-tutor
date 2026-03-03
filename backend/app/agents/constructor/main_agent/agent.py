@@ -17,6 +17,10 @@ from app.agents.constructor.tools.db_tools import (
     save_quiz_question,
     get_uploaded_files,
 )
+from app.agents.constructor.tools.user_interaction_tools import (
+    ask_user,
+    get_user_answer,
+)
 from app.agents.constructor.tools.ingestion_tools import (
     extract_text_from_pdf,
     extract_text_from_slides,
@@ -95,7 +99,9 @@ main_agent = create_deep_agent(
     model=llm,
     system_prompt=MAIN_COORDINATOR_PROMPT,
     tools=[
-        # No direct database tools for main agent - all DB operations through sub-agents
+        # User interaction tools for asking structured questions
+        ask_user,
+        get_user_answer,
     ],
     subagents=[
         structure_sub_agent,
