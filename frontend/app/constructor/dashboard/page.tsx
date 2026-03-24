@@ -8,14 +8,11 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
-import { ScrollArea } from "@/components/ui/scroll-area"
-import { Separator } from "@/components/ui/separator"
 import { Progress } from "@/components/ui/progress"
 import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
@@ -23,7 +20,7 @@ import { Input } from "@/components/ui/input"
 import {
   Zap,
   Upload,
-  Send,
+  ArrowUp,
   Loader2,
   FileText,
   Video,
@@ -31,18 +28,21 @@ import {
   CheckCircle2,
   LogOut,
   Bot,
-  Wrench,
   ChevronRight,
+  ChevronDown,
   Activity,
   Circle,
-  Clock,
+  AlertCircle,
 } from "lucide-react"
 import { useAuthStore } from "@/lib/store"
 import { constructorApi } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import { ChatMarkdown } from "@/components/chat-markdown"
 
-interface Message {
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface ChatMessage {
+  kind: "message"
   id: string
   role: "user" | "assistant"
   content: string
@@ -50,6 +50,35 @@ interface Message {
   isStreaming?: boolean
   streamId?: string
 }
+
+interface ActivityToolCall {
+  id: string
+  tool: string
+  args: Record<string, any>
+  status: "running" | "complete"
+  result: string | null
+}
+
+interface ChatSubagentActivity {
+  kind: "subagent_activity"
+  id: string
+  subagent_type: string
+  status: "running" | "complete" | "error"
+  startedAt: Date
+  toolCalls: ActivityToolCall[]
+  result: string | null
+  error: string | null
+  isExpanded: boolean
+}
+
+interface ChatTodoComplete {
+  kind: "todo_complete"
+  id: string
+  task: string
+  timestamp: Date
+}
+
+type ChatItem = ChatMessage | ChatSubagentActivity | ChatTodoComplete
 
 interface UploadedFile {
   id: string
@@ -59,16 +88,9 @@ interface UploadedFile {
   status: "uploading" | "processing" | "completed" | "error"
 }
 
-interface Subagent {
-  id: string
+interface GraphSubagent {
   subagent_type: string
-  description: string
-  status: "pending" | "running" | "complete" | "error"
-  startedAt: Date | null
-  completedAt: Date | null
-  result: string | null
-  error: string | null
-  toolCalls: ToolCall[]
+  status: "running" | "complete" | "error"
 }
 
 interface Todo {
@@ -77,152 +99,247 @@ interface Todo {
   status: "pending" | "in_progress" | "completed"
 }
 
-interface ToolCall {
-  tool: string
-  args: string
-  agent: string
-  timestamp: Date
-  result?: string
-  isRunning?: boolean
-}
+// ─── Constants ────────────────────────────────────────────────────────────────
 
-interface ToolResult {
-  tool: string
-  result: string
-  agent: string
-  timestamp: Date
-}
+const KNOWN_SUBAGENTS = [
+  { type: "Ingestion Sub-Agent", short: "Ingest" },
+  { type: "Structure Sub-Agent", short: "Structure" },
+  { type: "Quiz Generation Sub-Agent", short: "Quiz Gen" },
+  { type: "Validation Sub-Agent", short: "Validate" },
+] as const
 
-interface QuestionModal {
-  isOpen: boolean
-  questionId: string | null
-  question: string
-  choices: string[]
-  otherValue: string
-}
+// ─── Agent Hierarchy Graph ────────────────────────────────────────────────────
 
-// Subagent Card Component
-function SubagentCard({ subagent }: { subagent: Subagent }) {
-  const getStatusIcon = () => {
-    switch (subagent.status) {
-      case "pending":
-        return <Clock className="w-3 h-3 text-yellow-500" />
-      case "running":
-        return <Loader2 className="w-3 h-3 animate-spin text-blue-500" />
-      case "complete":
-        return <CheckCircle2 className="w-3 h-3 text-green-500" />
-      case "error":
-        return <Circle className="w-3 h-3 text-red-500 fill-current" />
-      default:
-        return <Circle className="w-3 h-3 text-gray-500" />
-    }
-  }
+function AgentHierarchyGraph({
+  subagents,
+  isMainActive,
+}: {
+  subagents: Map<string, GraphSubagent>
+  isMainActive: boolean
+}) {
+  const getStatus = (type: string) => subagents.get(type)?.status ?? "idle"
 
-  const getStatusText = () => {
-    switch (subagent.status) {
-      case "pending": return "Starting..."
-      case "running": return "Working..."
-      case "complete": return "Complete"
-      case "error": return "Error"
-      default: return ""
-    }
-  }
+  const nodeColors = (status: string) =>
+    cn(
+      "flex flex-col items-center gap-1 py-2 px-1 rounded-lg border text-center transition-all",
+      status === "running" && "border-blue-500/40 bg-blue-500/10",
+      status === "complete" && "border-green-500/30 bg-green-500/10",
+      status === "error" && "border-red-500/30 bg-red-500/10",
+      !["running", "complete", "error"].includes(status) && "border-border/40 bg-muted/20",
+    )
 
-  const getSubagentLabel = (type: string) => {
-    // Format subagent type for display
-    return type
-      .replace(/_/g, " ")
-      .replace(/-/g, " ")
-      .split(" ")
-      .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-      .join(" ")
-  }
+  const dotColor = (status: string) =>
+    cn(
+      "w-1.5 h-1.5 rounded-full shrink-0",
+      status === "running" && "bg-blue-400 animate-pulse",
+      status === "complete" && "bg-green-400",
+      status === "error" && "bg-red-400",
+      !["running", "complete", "error"].includes(status) && "bg-muted-foreground/30",
+    )
+
+  const labelColor = (status: string) =>
+    cn(
+      "text-[10px] font-medium leading-tight",
+      status === "running" && "text-blue-300",
+      status === "complete" && "text-green-300",
+      status === "error" && "text-red-300",
+      !["running", "complete", "error"].includes(status) && "text-muted-foreground",
+    )
+
+  // Sub-agent center x positions as percentages of the row width (4 equal cols)
+  const subagentXs = [12.5, 37.5, 62.5, 87.5]
 
   return (
-    <div className={cn(
-      "border rounded-lg p-3 text-xs",
-      subagent.status === "running" && "border-blue-500/30 bg-blue-500/5",
-      subagent.status === "complete" && "border-green-500/30 bg-green-500/5",
-      subagent.status === "error" && "border-red-500/30 bg-red-500/5",
-    )}>
-      {/* Header */}
-      <div className="flex items-center gap-2 mb-2">
-        {getStatusIcon()}
-        <span className="font-medium">{getSubagentLabel(subagent.subagent_type)}</span>
-        <span className={cn(
-          "text-xs",
-          subagent.status === "running" && "text-blue-400",
-          subagent.status === "complete" && "text-green-400",
-          subagent.status === "error" && "text-red-400",
-        )}>
-          {getStatusText()}
-        </span>
+    <div className="flex flex-col items-center text-xs">
+      {/* Main Coordinator node */}
+      <div
+        className={cn(
+          "flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border font-medium transition-all",
+          isMainActive
+            ? "border-primary/40 bg-primary/10 text-primary"
+            : "border-border/40 bg-muted/20 text-muted-foreground",
+        )}
+      >
+        <Bot className="w-3.5 h-3.5 shrink-0" />
+        <span>Main Coordinator</span>
+        {isMainActive && (
+          <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse shrink-0" />
+        )}
       </div>
 
-      {/* Description */}
-      {subagent.description && (
-        <p className="text-muted-foreground text-xs mb-2 line-clamp-2">
-          {subagent.description}
-        </p>
-      )}
-
-      {/* Tool calls */}
-      {subagent.toolCalls.length > 0 && (
-        <div className="space-y-1 mt-2">
-          <div className="text-muted-foreground text-xs">Tools used:</div>
-          {subagent.toolCalls.slice(-3).map((call, idx) => (
-            <div key={idx} className="flex items-center gap-1 text-xs">
-              <Wrench className="w-3 h-3 text-muted-foreground" />
-              <span className="font-mono truncate">{call.tool}</span>
-            </div>
+      {/* Connecting lines via SVG */}
+      <div className="relative w-full" style={{ height: 36 }}>
+        <svg
+          className="absolute inset-0 w-full h-full overflow-visible"
+          preserveAspectRatio="none"
+        >
+          {/* Vertical drop from main agent */}
+          <line x1="50%" y1="0" x2="50%" y2="50%" stroke="currentColor" strokeOpacity="0.25" strokeWidth="1" />
+          {/* Horizontal bar connecting all sub-agents */}
+          <line
+            x1={`${subagentXs[0]}%`} y1="50%"
+            x2={`${subagentXs[subagentXs.length - 1]}%`} y2="50%"
+            stroke="currentColor" strokeOpacity="0.25" strokeWidth="1"
+          />
+          {/* Vertical drops to each sub-agent */}
+          {subagentXs.map((x, i) => (
+            <line
+              key={i}
+              x1={`${x}%`} y1="50%"
+              x2={`${x}%`} y2="100%"
+              stroke="currentColor" strokeOpacity="0.25" strokeWidth="1"
+            />
           ))}
-        </div>
-      )}
+        </svg>
+      </div>
 
-      {/* Result preview */}
-      {subagent.result && (
-        <div className="mt-2 p-2 bg-green-500/10 border border-green-500/20 rounded">
-          <div className="text-xs text-green-300 line-clamp-3">
-            {subagent.result.slice(0, 200)}
-            {subagent.result.length > 200 && "..."}
-          </div>
-        </div>
-      )}
+      {/* Sub-agent nodes in a horizontal row */}
+      <div className="w-full grid grid-cols-4 gap-1">
+        {KNOWN_SUBAGENTS.map(({ type, short }) => {
+          const status = getStatus(type)
+          return (
+            <div key={type} className={nodeColors(status)}>
+              <span className={dotColor(status)} />
+              <span className={labelColor(status)}>{short}</span>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
 
-      {/* Error */}
-      {subagent.error && (
-        <div className="mt-2 p-2 bg-red-500/10 border border-red-500/20 rounded">
-          <div className="text-xs text-red-300">
-            {subagent.error}
-          </div>
+// ─── Subagent Activity Entry ──────────────────────────────────────────────────
+
+function SubagentActivityEntry({
+  activity,
+  onToggle,
+}: {
+  activity: ChatSubagentActivity
+  onToggle: (id: string) => void
+}) {
+  const formatValue = (v: any, maxLen = 400): string => {
+    if (v === null || v === undefined) return ""
+    if (typeof v === "string") {
+      try {
+        const parsed = JSON.parse(v)
+        const pretty = JSON.stringify(parsed, null, 2)
+        return pretty.length > maxLen ? pretty.slice(0, maxLen) + "\n..." : pretty
+      } catch {
+        return v.length > maxLen ? v.slice(0, maxLen) + "..." : v
+      }
+    }
+    const str = JSON.stringify(v, null, 2)
+    return str.length > maxLen ? str.slice(0, maxLen) + "\n..." : str
+  }
+
+  const completedCount = activity.toolCalls.filter((t) => t.status === "complete").length
+
+  return (
+    <div
+      className={cn(
+        "rounded-xl border text-xs overflow-hidden",
+        activity.status === "running" && "border-blue-500/30 bg-blue-500/5",
+        activity.status === "complete" && "border-green-500/20 bg-green-500/5",
+        activity.status === "error" && "border-red-500/20 bg-red-500/5",
+      )}
+    >
+      {/* Collapsible header */}
+      <button
+        className="w-full flex items-center gap-2 px-3 py-2.5 text-left hover:bg-white/5 transition-colors"
+        onClick={() => onToggle(activity.id)}
+      >
+        {activity.status === "running" ? (
+          <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-400 shrink-0" />
+        ) : activity.status === "complete" ? (
+          <CheckCircle2 className="w-3.5 h-3.5 text-green-400 shrink-0" />
+        ) : (
+          <AlertCircle className="w-3.5 h-3.5 text-red-400 shrink-0" />
+        )}
+        <span className="font-medium flex-1">{activity.subagent_type}</span>
+        {activity.toolCalls.length > 0 && (
+          <span className="text-muted-foreground text-[10px] mr-1">
+            {completedCount}/{activity.toolCalls.length} tools
+          </span>
+        )}
+        {activity.isExpanded ? (
+          <ChevronDown className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+        ) : (
+          <ChevronRight className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+        )}
+      </button>
+
+      {/* Expanded body */}
+      {activity.isExpanded && (
+        <div className="border-t border-border/20 px-3 py-2.5 space-y-4">
+          {activity.toolCalls.length === 0 ? (
+            <p className="text-muted-foreground">Initializing...</p>
+          ) : (
+            activity.toolCalls.map((call) => (
+              <div key={call.id} className="space-y-1.5">
+                {/* Name + status */}
+                <div className="flex items-center gap-1.5">
+                  {call.status === "running" ? (
+                    <Loader2 className="w-3 h-3 animate-spin text-yellow-400 shrink-0" />
+                  ) : (
+                    <CheckCircle2 className="w-3 h-3 text-green-400 shrink-0" />
+                  )}
+                  <span className="font-mono font-semibold text-foreground/90">{call.tool}</span>
+                </div>
+                {/* Args */}
+                {Object.keys(call.args).length > 0 && (
+                  <div className="ml-4 rounded-md bg-muted/40 border border-border/30 p-2 space-y-0.5">
+                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">
+                      Input
+                    </p>
+                    <pre className="font-mono text-[10px] text-foreground/60 whitespace-pre-wrap break-all leading-relaxed">
+                      {formatValue(call.args)}
+                    </pre>
+                  </div>
+                )}
+                {/* Result */}
+                {call.result && (
+                  <div className="ml-4 rounded-md bg-green-950/30 border border-green-500/20 p-2 space-y-0.5">
+                    <p className="text-[10px] uppercase tracking-wider text-green-400/70 font-medium">
+                      Result
+                    </p>
+                    <pre className="font-mono text-[10px] text-foreground/60 whitespace-pre-wrap break-all leading-relaxed">
+                      {formatValue(call.result)}
+                    </pre>
+                  </div>
+                )}
+              </div>
+            ))
+          )}
+          {activity.error && (
+            <div className="rounded-md bg-red-950/30 border border-red-500/20 p-2 text-red-300">
+              {activity.error}
+            </div>
+          )}
         </div>
       )}
     </div>
   )
 }
 
+// ─── Main Dashboard ───────────────────────────────────────────────────────────
+
 export default function ConstructorDashboard() {
   const router = useRouter()
   const { creatorId, creatorToken, logout, _hasHydrated } = useAuthStore()
-  const [messages, setMessages] = useState<Message[]>([])
+
+  const [chatItems, setChatItems] = useState<ChatItem[]>([])
   const [inputMessage, setInputMessage] = useState("")
   const [isLoading, setIsLoading] = useState(false)
   const [isConnected, setIsConnected] = useState(false)
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [courseId, setCourseId] = useState<number | null>(null)
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([])
-  const [progress, setProgress] = useState(0)
-  const [phase, setPhase] = useState("")
   const [isStoreHydrated, setIsStoreHydrated] = useState(false)
   const [currentAgent, setCurrentAgent] = useState<string>("")
-  const [isSubagentWorking, setIsSubagentWorking] = useState<boolean>(false)
-  const [isAgentThinking, setIsAgentThinking] = useState<boolean>(false)
-  const [recentToolCalls, setRecentToolCalls] = useState<ToolCall[]>([])
-  const [recentToolResults, setRecentToolResults] = useState<ToolResult[]>([])
-  // New: Subagent tracking
-  const [subagents, setSubagents] = useState<Map<string, Subagent>>(new Map())
+  const [isAgentThinking, setIsAgentThinking] = useState(false)
+  const [subagents, setSubagents] = useState<Map<string, GraphSubagent>>(new Map())
   const [todos, setTodos] = useState<Todo[]>([])
-  // Question modal state
   const [questionModal, setQuestionModal] = useState<{
     isOpen: boolean
     questionId: string | null
@@ -236,7 +353,8 @@ export default function ConstructorDashboard() {
     choices: [],
     otherValue: "",
   })
-  const messagesEndRef = useRef<HTMLDivElement>(null)
+
+  const chatEndRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const wsRef = useRef<WebSocket | null>(null)
@@ -244,19 +362,22 @@ export default function ConstructorDashboard() {
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const reconnectAttemptsRef = useRef(0)
   const allowReconnectRef = useRef(true)
+  const prevTodosRef = useRef<Todo[]>([])
+
+  // Is the main coordinator the active agent (no subagent running)?
+  const isMainActive =
+    isConnected &&
+    (currentAgent === "Main Coordinator" ||
+      (isAgentThinking && !Array.from(subagents.values()).some((s) => s.status === "running")))
+
+  // ── Lifecycle ──────────────────────────────────────────────────────────────
 
   useEffect(() => {
-    // Only redirect to login after store has hydrated from localStorage
     if (_hasHydrated && !creatorToken) {
       router.push("/auth/login")
       return
     }
-
-    // Only initialize if we have a token and store has hydrated
-    if (_hasHydrated && creatorToken) {
-      initializeSession()
-    }
-
+    if (_hasHydrated && creatorToken) initializeSession()
     return () => {
       allowReconnectRef.current = false
       if (reconnectTimerRef.current) {
@@ -272,61 +393,47 @@ export default function ConstructorDashboard() {
   }, [_hasHydrated, creatorToken])
 
   useEffect(() => {
-    scrollToBottom()
-  }, [messages])
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" })
+  }, [chatItems])
 
-  // Auto-clear completed tool results after 5 seconds
   useEffect(() => {
-    if (recentToolResults.length > 0) {
-      const timer = setTimeout(() => {
-        setRecentToolResults([])
-      }, 5000)
-      return () => clearTimeout(timer)
-    }
-  }, [recentToolResults])
-
-  // Track store hydration state
-  useEffect(() => {
-    if (_hasHydrated) {
-      setIsStoreHydrated(true)
-    }
+    if (_hasHydrated) setIsStoreHydrated(true)
   }, [_hasHydrated])
 
-  // Auto-resize textarea
   useEffect(() => {
     const textarea = textareaRef.current
     if (!textarea) return
-
     const resize = () => {
-      textarea.style.height = 'auto'
+      textarea.style.height = "auto"
       textarea.style.height = `${Math.min(textarea.scrollHeight, 160)}px`
     }
-
     resize()
-    textarea.addEventListener('input', resize)
-    return () => textarea.removeEventListener('input', resize)
+    textarea.addEventListener("input", resize)
+    return () => textarea.removeEventListener("input", resize)
   }, [inputMessage])
+
+  // ── Session & WebSocket ────────────────────────────────────────────────────
 
   const initializeSession = async () => {
     const requestId = ++initRequestIdRef.current
     try {
       const response = await constructorApi.startSession()
       if (requestId !== initRequestIdRef.current) return
-
       setSessionId(response.session_id)
       setCourseId(response.course_id)
-
-      // Add welcome message
-      setMessages([{
-        id: "welcome",
-        role: "assistant",
-        content: response.message || "Hello! I'm your Course Constructor Assistant. Let's build a course together!",
-        timestamp: new Date(),
-      }])
-
-      // Connect WebSocket for streaming
+      setChatItems([
+        {
+          kind: "message",
+          id: "welcome",
+          role: "assistant",
+          content:
+            response.message ||
+            "Hello! I'm your Course Constructor Assistant. Let's build a course together!",
+          timestamp: new Date(),
+        },
+      ])
       connectWebSocket(response.session_id)
-    } catch (error: any) {
+    } catch {
       if (requestId !== initRequestIdRef.current) return
       toast.error("Failed to initialize session")
     }
@@ -335,41 +442,32 @@ export default function ConstructorDashboard() {
   const resolveWebSocketBase = () => {
     const wsProtocol = window.location.protocol === "https:" ? "wss" : "ws"
     const configuredBase = process.env.NEXT_PUBLIC_WS_URL || process.env.NEXT_PUBLIC_API_URL
-
     if (configuredBase) {
       try {
         const url = new URL(configuredBase)
-        // Guard against accidental ws through Next dev proxy on :3000.
-        if (
-          url.port === "3000" &&
-          (url.hostname === "localhost" || url.hostname === "127.0.0.1")
-        ) {
+        if (url.port === "3000" && (url.hostname === "localhost" || url.hostname === "127.0.0.1")) {
           return `${wsProtocol}://localhost:8000`
         }
-        const protocol = url.protocol === "https:" ? "wss" : "ws"
-        return `${protocol}://${url.host}`
-      } catch {
-        // Fall through to localhost backend default.
-      }
+        return `${url.protocol === "https:" ? "wss" : "ws"}://${url.host}`
+      } catch {}
     }
-
     return `${wsProtocol}://${window.location.hostname}:8000`
   }
 
-  const connectWebSocket = (sessionId: string) => {
-    if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
+  const connectWebSocket = (sid: string) => {
+    if (
+      wsRef.current &&
+      (wsRef.current.readyState === WebSocket.OPEN ||
+        wsRef.current.readyState === WebSocket.CONNECTING)
+    )
       return
-    }
-
     if (wsRef.current) {
       wsRef.current.close()
       wsRef.current = null
     }
 
     const wsBase = resolveWebSocketBase()
-    const wsUrl = `${wsBase}/api/v1/constructor/session/ws/${sessionId}`
-
-    wsRef.current = new WebSocket(wsUrl)
+    wsRef.current = new WebSocket(`${wsBase}/api/v1/constructor/session/ws/${sid}`)
 
     wsRef.current.onopen = () => {
       setIsConnected(true)
@@ -381,210 +479,301 @@ export default function ConstructorDashboard() {
     }
 
     wsRef.current.onmessage = (event) => {
+      console.log("WS:", event.data)
       const data = JSON.parse(event.data)
 
+      // ── token ──────────────────────────────────────────────────────────────
       if (data.type === "token") {
+        setIsLoading(false)
         const isFirst = Boolean(data.metadata?.is_first)
         const isLast = Boolean(data.metadata?.is_last)
         const streamId = String(data.metadata?.stream_id || "")
 
-        // Streaming token
-        setMessages((prev) => {
+        setChatItems((prev) => {
           if (isFirst) {
             const last = prev[prev.length - 1]
             if (
-              last?.role === "assistant" &&
-              !last.isStreaming &&
-              streamId &&
-              last.streamId === streamId
-            ) {
+              last?.kind === "message" &&
+              (last as ChatMessage).role === "assistant" &&
+              (last as ChatMessage).isStreaming &&
+              (last as ChatMessage).streamId === streamId
+            )
               return prev
-            }
             return [
               ...prev,
               {
+                kind: "message",
                 id: Date.now().toString(),
                 role: "assistant",
                 content: data.content,
                 timestamp: new Date(),
                 isStreaming: !isLast,
                 streamId,
-              },
+              } as ChatMessage,
             ]
           }
-
-          const idx = [...prev].reverse().findIndex(
-            (m) =>
-              m.role === "assistant" &&
-              m.isStreaming &&
-              (!!streamId ? m.streamId === streamId : true)
-          )
-          if (idx !== -1) {
-            const realIdx = prev.length - 1 - idx
-            const current = prev[realIdx]
-            return prev.map((m, i) =>
-              i === realIdx
-                ? {
-                    ...current,
-                    content: current.content + data.content,
+          // Find existing streaming message
+          let streamIdx = -1
+          for (let i = prev.length - 1; i >= 0; i--) {
+            const item = prev[i]
+            if (
+              item.kind === "message" &&
+              (item as ChatMessage).role === "assistant" &&
+              (item as ChatMessage).isStreaming &&
+              (!streamId || (item as ChatMessage).streamId === streamId)
+            ) {
+              streamIdx = i
+              break
+            }
+          }
+          if (streamIdx !== -1) {
+            return prev.map((item, i) =>
+              i === streamIdx
+                ? ({
+                    ...item,
+                    content: (item as ChatMessage).content + data.content,
                     isStreaming: !isLast,
-                    streamId: current.streamId || streamId,
-                  }
-                : m
+                  } as ChatMessage)
+                : item,
             )
           }
-
           return [
             ...prev,
             {
+              kind: "message",
               id: Date.now().toString(),
               role: "assistant",
               content: data.content,
               timestamp: new Date(),
               isStreaming: !isLast,
               streamId,
-            },
+            } as ChatMessage,
           ]
         })
+
+      // ── status ─────────────────────────────────────────────────────────────
       } else if (data.type === "status") {
-        // Handle status updates from the new streaming format
-        if (data.status) {
-          setPhase(data.status)
-        }
-        if (data.metadata?.phase) {
-          setPhase(data.metadata.phase)
-        }
-        if (data.metadata?.progress !== undefined) {
-          setProgress(data.metadata.progress * 100)
-        }
+        // No status display in new UI, but we still handle it
+
+      // ── agent_change ───────────────────────────────────────────────────────
       } else if (data.type === "agent_change") {
-        // Agent changed - update current agent display
-        setCurrentAgent(data.agent || "Unknown")
-        setIsSubagentWorking(data.is_subagent || false)
+        setCurrentAgent(data.agent || "")
+
+      // ── agent_thinking ─────────────────────────────────────────────────────
       } else if (data.type === "agent_thinking") {
-        // Agent is thinking
-        setCurrentAgent(data.agent || "Unknown")
+        setCurrentAgent(data.agent || "")
         setIsAgentThinking(true)
+
       } else if (data.type === "agent_done_thinking") {
-        // Agent done thinking - keep current agent for continuity
         setIsAgentThinking(false)
+
+      // ── subagent_start ─────────────────────────────────────────────────────
       } else if (data.type === "subagent_start") {
-        // New subagent starting - use subagent_type as key to deduplicate
-        const subagentType = data.subagent_type || "Unknown"
-        const newSubagent: Subagent = {
-          id: subagentType, // Use type as ID to prevent duplicates
-          subagent_type: subagentType,
-          description: data.description || "",
-          status: "running",
-          startedAt: new Date(),
-          completedAt: null,
-          result: null,
-          error: null,
-          toolCalls: [],
-        }
+        const subagentType: string = data.subagent_type || "Unknown"
+
         setSubagents((prev) => {
-          // If subagent of this type already exists and is running, don't recreate it
           const existing = prev.get(subagentType)
-          if (existing && existing.status === "running") {
-            return prev // Already running, skip duplicate
-          }
-          return new Map(prev).set(subagentType, newSubagent)
-        })
-        setCurrentAgent(subagentType)
-        setIsSubagentWorking(true)
-      } else if (data.type === "subagent_complete") {
-        // Subagent completed
-        setSubagents((prev) => {
-          const updated = new Map(prev)
-          for (const [id, subagent] of updated) {
-            if (id === data.subagent_id || subagent.subagent_type === data.subagent_id) {
-              updated.set(id, {
-                ...subagent,
-                status: "complete",
-                completedAt: new Date(),
-                result: data.result || null,
-              })
-            }
-          }
-          // Check if any subagents still running
-          const stillRunning = Array.from(updated.values()).filter(s => s.status === "running")
-          if (stillRunning.length === 0) {
-            setIsSubagentWorking(false)
-            setCurrentAgent("")
-          }
-          return updated
-        })
-      } else if (data.type === "subagent_error") {
-        // Subagent error
-        setSubagents((prev) => {
-          const updated = new Map(prev)
-          for (const [id, subagent] of updated) {
-            if (id === data.subagent_id || subagent.subagent_type === data.subagent_id) {
-              updated.set(id, {
-                ...subagent,
-                status: "error",
-                completedAt: new Date(),
-                error: data.error || "Unknown error",
-              })
-            }
-          }
-          // Check if any subagents still running
-          const stillRunning = Array.from(updated.values()).filter(s => s.status === "running")
-          if (stillRunning.length === 0) {
-            setIsSubagentWorking(false)
-            setCurrentAgent("")
-          }
-          return updated
-        })
-        toast.error(`Subagent error: ${data.error}`)
-      } else if (data.type === "tool_call") {
-        // Skip internal 'task' tool (used for subagent delegation)
-        if (data.tool === "task") return
-
-        // Tool is being called
-        const newToolCall: ToolCall = {
-          tool: data.tool || "unknown",
-          args: JSON.stringify(data.args || {}),
-          agent: data.agent || "Unknown",
-          timestamp: new Date(),
-          isRunning: true,
-        }
-        setRecentToolCalls((prev) => [...prev.slice(-4), newToolCall]) // Keep last 5
-        // Clear from results when tool is called
-        setRecentToolResults((prev) => prev.filter(r => r.tool !== data.tool))
-        // Add to subagent's tool calls if applicable
-        if (data.subagent_id) {
-          setSubagents((prev) => {
-            const updated = new Map(prev)
-            const subagent = updated.get(data.subagent_id)
-            if (subagent) {
-              updated.set(data.subagent_id, {
-                ...subagent,
-                toolCalls: [...subagent.toolCalls, newToolCall],
-              })
-            }
-            return updated
+          if (existing && existing.status === "running") return prev
+          return new Map(prev).set(subagentType, {
+            subagent_type: subagentType,
+            status: "running",
           })
-        }
-      } else if (data.type === "tool_result") {
-        // Skip internal 'task' tool (used for subagent delegation)
-        if (data.tool === "task") return
+        })
 
-        // Tool completed
-        const newToolResult: ToolResult = {
+        setChatItems((prev) => {
+          // Skip if already a running entry for this type
+          const alreadyRunning = prev.some(
+            (item) =>
+              item.kind === "subagent_activity" &&
+              (item as ChatSubagentActivity).subagent_type === subagentType &&
+              (item as ChatSubagentActivity).status === "running",
+          )
+          if (alreadyRunning) return prev
+          const newActivity: ChatSubagentActivity = {
+            kind: "subagent_activity",
+            id: `${subagentType}-${Date.now()}`,
+            subagent_type: subagentType,
+            status: "running",
+            startedAt: new Date(),
+            toolCalls: [],
+            result: null,
+            error: null,
+            isExpanded: true,
+          }
+          return [...prev, newActivity]
+        })
+
+        setCurrentAgent(subagentType)
+
+      // ── subagent_complete ──────────────────────────────────────────────────
+      } else if (data.type === "subagent_complete") {
+        const completedType: string = data.subagent_id || ""
+
+        setSubagents((prev) => {
+          const updated = new Map(prev)
+          const sa = updated.get(completedType)
+          if (sa) updated.set(completedType, { ...sa, status: "complete" })
+          return updated
+        })
+
+        setChatItems((prev) => {
+          let lastRunningIdx = -1
+          for (let i = 0; i < prev.length; i++) {
+            const item = prev[i]
+            if (
+              item.kind === "subagent_activity" &&
+              (item as ChatSubagentActivity).subagent_type === completedType &&
+              (item as ChatSubagentActivity).status === "running"
+            ) {
+              lastRunningIdx = i
+            }
+          }
+          if (lastRunningIdx === -1) return prev
+          return prev.map((item, i) =>
+            i === lastRunningIdx
+              ? ({
+                  ...item,
+                  status: "complete",
+                  result: data.result || null,
+                  isExpanded: false,
+                } as ChatSubagentActivity)
+              : item,
+          )
+        })
+
+      // ── subagent_error ─────────────────────────────────────────────────────
+      } else if (data.type === "subagent_error") {
+        const errorType: string = data.subagent_id || ""
+
+        setSubagents((prev) => {
+          const updated = new Map(prev)
+          const sa = updated.get(errorType)
+          if (sa) updated.set(errorType, { ...sa, status: "error" })
+          return updated
+        })
+
+        setChatItems((prev) => {
+          let lastRunningIdx = -1
+          for (let i = 0; i < prev.length; i++) {
+            const item = prev[i]
+            if (
+              item.kind === "subagent_activity" &&
+              (item as ChatSubagentActivity).subagent_type === errorType &&
+              (item as ChatSubagentActivity).status === "running"
+            ) {
+              lastRunningIdx = i
+            }
+          }
+          if (lastRunningIdx === -1) return prev
+          return prev.map((item, i) =>
+            i === lastRunningIdx
+              ? ({
+                  ...item,
+                  status: "error",
+                  error: data.error || "Unknown error",
+                  isExpanded: true,
+                } as ChatSubagentActivity)
+              : item,
+          )
+        })
+
+        toast.error(`Sub-agent error: ${data.error}`)
+
+      // ── tool_call ──────────────────────────────────────────────────────────
+      } else if (data.type === "tool_call") {
+        if (data.tool === "task") return
+        const agentName: string = data.agent || ""
+        const newCall: ActivityToolCall = {
+          id: `${data.tool}-${Date.now()}`,
           tool: data.tool || "unknown",
-          result: data.result || "",
-          agent: data.agent || "Unknown",
-          timestamp: new Date(),
+          args: data.args || {},
+          status: "running",
+          result: null,
         }
-        setRecentToolResults((prev) => [...prev.slice(-2), newToolResult]) // Keep last 3
-        // Remove from pending calls
-        setRecentToolCalls((prev) => prev.filter(c => c.tool !== data.tool))
+
+        setChatItems((prev) => {
+          let lastRunningIdx = -1
+          for (let i = 0; i < prev.length; i++) {
+            const item = prev[i]
+            if (
+              item.kind === "subagent_activity" &&
+              (item as ChatSubagentActivity).status === "running" &&
+              (!agentName || (item as ChatSubagentActivity).subagent_type === agentName)
+            ) {
+              lastRunningIdx = i
+            }
+          }
+          if (lastRunningIdx === -1) return prev
+          const activity = prev[lastRunningIdx] as ChatSubagentActivity
+          return prev.map((item, i) =>
+            i === lastRunningIdx
+              ? ({ ...activity, toolCalls: [...activity.toolCalls, newCall] } as ChatSubagentActivity)
+              : item,
+          )
+        })
+
+      // ── tool_result ────────────────────────────────────────────────────────
+      } else if (data.type === "tool_result") {
+        if (data.tool === "task") return
+        const toolName: string = data.tool || ""
+        const agentName: string = data.agent || ""
+
+        setChatItems((prev) => {
+          const newItems = [...prev]
+          for (let i = newItems.length - 1; i >= 0; i--) {
+            const item = newItems[i]
+            if (item.kind !== "subagent_activity") continue
+            const act = item as ChatSubagentActivity
+            if (agentName && act.subagent_type !== agentName) continue
+
+            let lastRunningCallIdx = -1
+            for (let j = 0; j < act.toolCalls.length; j++) {
+              if (act.toolCalls[j].tool === toolName && act.toolCalls[j].status === "running") {
+                lastRunningCallIdx = j
+              }
+            }
+            if (lastRunningCallIdx !== -1) {
+              const updatedCalls = act.toolCalls.map((c, ci) =>
+                ci === lastRunningCallIdx
+                  ? { ...c, status: "complete" as const, result: data.result || "" }
+                  : c,
+              )
+              newItems[i] = { ...act, toolCalls: updatedCalls } as ChatSubagentActivity
+              return newItems
+            }
+          }
+          return prev
+        })
+
+      // ── todo_update ────────────────────────────────────────────────────────
       } else if (data.type === "todo_update") {
-        // Todo list update
-        setTodos(data.todos || [])
+        const newTodos: Todo[] = data.todos || []
+        const prevTodos = prevTodosRef.current
+
+        // Detect newly completed todos → inject notification into chat
+        const newlyCompleted = newTodos.filter(
+          (t) =>
+            t.status === "completed" &&
+            !prevTodos.find((p) => p.id === t.id && p.status === "completed"),
+        )
+        if (newlyCompleted.length > 0) {
+          setChatItems((prev) => [
+            ...prev,
+            ...newlyCompleted.map((t) => ({
+              kind: "todo_complete" as const,
+              id: `todo-complete-${t.id}-${Date.now()}`,
+              task: t.task,
+              timestamp: new Date(),
+            })),
+          ])
+        }
+
+        prevTodosRef.current = newTodos
+        setTodos(newTodos)
+
+      // ── question ───────────────────────────────────────────────────────────
       } else if (data.type === "question") {
-        // Structured question from agent - show as modal
+        console.log("Question:", data)
         setQuestionModal({
           isOpen: true,
           questionId: data.question_id || null,
@@ -592,39 +781,31 @@ export default function ConstructorDashboard() {
           choices: data.choices || [],
           otherValue: "",
         })
+
+      // ── validation ─────────────────────────────────────────────────────────
       } else if (data.type === "validation") {
-        // Validation complete
         if (data.passed) {
           toast.success(`Course is ready! Readiness: ${(data.readiness_score * 100).toFixed(0)}%`)
         } else {
           toast.error("Course needs fixes before publishing")
         }
-        setProgress(data.readiness_score * 100)
+
+      // ── error ──────────────────────────────────────────────────────────────
       } else if (data.type === "error") {
         toast.error(data.content)
+
+      // ── stream_complete ────────────────────────────────────────────────────
       } else if (data.type === "stream_complete") {
-        // Stream complete - mark any streaming messages as complete
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.isStreaming ? { ...m, isStreaming: false } : m
-          )
+        setIsLoading(false)
+        setChatItems((prev) =>
+          prev.map((item) =>
+            item.kind === "message" && (item as ChatMessage).isStreaming
+              ? ({ ...item, isStreaming: false } as ChatMessage)
+              : item,
+          ),
         )
-        // Clear current agent
         setCurrentAgent("")
-        setIsSubagentWorking(false)
         setIsAgentThinking(false)
-        // Clear completed subagents after a delay
-        setTimeout(() => {
-          setSubagents((prev) => {
-            const updated = new Map()
-            // Keep only recently completed subagents (last 2)
-            const completed = Array.from(prev.values())
-              .filter(s => s.status === "complete" || s.status === "error")
-              .slice(-2)
-            completed.forEach(s => updated.set(s.id, s))
-            return updated
-          })
-        }, 5000)
       }
     }
 
@@ -633,46 +814,46 @@ export default function ConstructorDashboard() {
       wsRef.current = null
       if (!allowReconnectRef.current) return
       if (reconnectTimerRef.current) return
-
       const attempt = Math.min(reconnectAttemptsRef.current + 1, 6)
       reconnectAttemptsRef.current = attempt
-      const delayMs = Math.min(1000 * (2 ** (attempt - 1)), 10000)
-
+      const delayMs = Math.min(1000 * 2 ** (attempt - 1), 10000)
       reconnectTimerRef.current = setTimeout(() => {
         reconnectTimerRef.current = null
-        connectWebSocket(sessionId)
+        connectWebSocket(sid)
       }, delayMs)
     }
 
     wsRef.current.onerror = () => {
       setIsConnected(false)
-      // onclose will schedule reconnect; keep this quiet to avoid toast spam.
     }
   }
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
+  // ── Handlers ───────────────────────────────────────────────────────────────
+
+  const handleToggleActivity = (id: string) => {
+    setChatItems((prev) =>
+      prev.map((item) =>
+        item.kind === "subagent_activity" && (item as ChatSubagentActivity).id === id
+          ? ({
+              ...item,
+              isExpanded: !(item as ChatSubagentActivity).isExpanded,
+            } as ChatSubagentActivity)
+          : item,
+      ),
+    )
   }
 
   const handleQuestionAnswer = (choice: string) => {
     if (!wsRef.current || !questionModal.questionId) return
-
-    // Send the answer via WebSocket
-    wsRef.current.send(JSON.stringify({
-      type: "question_answer",
-      question_id: questionModal.questionId,
-      answer: choice,
-      answer_type: "choice",
-    }))
-
-    // Close the modal
-    setQuestionModal({
-      isOpen: false,
-      questionId: null,
-      question: "",
-      choices: [],
-      otherValue: "",
-    })
+    wsRef.current.send(
+      JSON.stringify({
+        type: "question_answer",
+        question_id: questionModal.questionId,
+        answer: choice,
+        answer_type: "choice",
+      }),
+    )
+    setQuestionModal({ isOpen: false, questionId: null, question: "", choices: [], otherValue: "" })
   }
 
   const handleOtherAnswer = () => {
@@ -680,60 +861,46 @@ export default function ConstructorDashboard() {
       toast.error("Please enter your answer")
       return
     }
-
-    // Send the answer via WebSocket
-    wsRef.current.send(JSON.stringify({
-      type: "question_answer",
-      question_id: questionModal.questionId,
-      answer: questionModal.otherValue.trim(),
-      answer_type: "other",
-    }))
-
-    // Close the modal
-    setQuestionModal({
-      isOpen: false,
-      questionId: null,
-      question: "",
-      choices: [],
-      otherValue: "",
-    })
+    wsRef.current.send(
+      JSON.stringify({
+        type: "question_answer",
+        question_id: questionModal.questionId,
+        answer: questionModal.otherValue.trim(),
+        answer_type: "other",
+      }),
+    )
+    setQuestionModal({ isOpen: false, questionId: null, question: "", choices: [], otherValue: "" })
   }
 
   const handleSendMessage = async () => {
     if (!inputMessage.trim() || !sessionId) return
-
-    const userMessage: Message = {
+    const userMessage: ChatMessage = {
+      kind: "message",
       id: Date.now().toString(),
       role: "user",
       content: inputMessage,
       timestamp: new Date(),
     }
-
-    setMessages((prev) => [...prev, userMessage])
+    setChatItems((prev) => [...prev, userMessage])
     setInputMessage("")
     setIsLoading(true)
-
     try {
-      // Preferred path: WebSocket streaming
       if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({
-          type: "message",
-          message: userMessage.content,
-          creator_id: creatorId,
-        }))
+        wsRef.current.send(
+          JSON.stringify({ type: "message", message: userMessage.content, creator_id: creatorId }),
+        )
         return
       }
-
-      // Fallback path: HTTP chat when WS is unavailable
       const response = await constructorApi.chat(sessionId, userMessage.content)
-      setMessages((prev) => [
+      setChatItems((prev) => [
         ...prev,
         {
+          kind: "message",
           id: `${Date.now()}_assistant`,
           role: "assistant",
           content: response.response || "I received your message.",
           timestamp: new Date(),
-        },
+        } as ChatMessage,
       ])
       toast.warning("WebSocket was not connected. Used HTTP fallback.")
     } catch (error: any) {
@@ -748,7 +915,6 @@ export default function ConstructorDashboard() {
       toast.error("Session not ready. Please wait...")
       return
     }
-
     const newFiles: UploadedFile[] = Array.from(files).map((file) => ({
       id: Date.now().toString() + Math.random(),
       name: file.name,
@@ -756,54 +922,33 @@ export default function ConstructorDashboard() {
       type: file.type,
       status: "uploading" as const,
     }))
-
     setUploadedFiles((prev) => [...prev, ...newFiles])
-
     try {
       await constructorApi.uploadFiles(sessionId, courseId, Array.from(files))
-
-      // Update file statuses
       setUploadedFiles((prev) =>
-        prev.map((f) => {
-          if (newFiles.find((nf) => nf.name === f.name)) {
-            return { ...f, status: "processing" }
-          }
-          return f
-        })
+        prev.map((f) =>
+          newFiles.find((nf) => nf.name === f.name) ? { ...f, status: "processing" } : f,
+        ),
       )
-
-      // Notify WebSocket
       if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({
-          type: "upload",
-          file_ids: newFiles.map((f) => f.id),
-        }))
+        wsRef.current.send(JSON.stringify({ type: "upload", file_ids: newFiles.map((f) => f.id) }))
       } else if (sessionId) {
         connectWebSocket(sessionId)
       }
-
-      // Simulate processing completion
       setTimeout(() => {
         setUploadedFiles((prev) =>
-          prev.map((f) => {
-            if (newFiles.find((nf) => nf.name === f.name)) {
-              return { ...f, status: "completed" }
-            }
-            return f
-          })
+          prev.map((f) =>
+            newFiles.find((nf) => nf.name === f.name) ? { ...f, status: "completed" } : f,
+          ),
         )
       }, 3000)
-
       toast.success(`Uploaded ${files.length} file(s)`)
-    } catch (error) {
+    } catch {
       toast.error("Failed to upload files")
       setUploadedFiles((prev) =>
-        prev.map((f) => {
-          if (newFiles.find((nf) => nf.name === f.name)) {
-            return { ...f, status: "error" }
-          }
-          return f
-        })
+        prev.map((f) =>
+          newFiles.find((nf) => nf.name === f.name) ? { ...f, status: "error" } : f,
+        ),
       )
     }
   }
@@ -825,7 +970,8 @@ export default function ConstructorDashboard() {
     return <File className="w-4 h-4" />
   }
 
-  // Show loading while store hydrates from localStorage
+  // ── Render ─────────────────────────────────────────────────────────────────
+
   if (!isStoreHydrated) {
     return (
       <div className="min-h-screen flex items-center justify-center gradient-bg">
@@ -836,6 +982,8 @@ export default function ConstructorDashboard() {
       </div>
     )
   }
+
+  const completedTodos = todos.filter((t) => t.status === "completed").length
 
   return (
     <div className="min-h-screen flex flex-col gradient-bg">
@@ -848,10 +996,11 @@ export default function ConstructorDashboard() {
             </div>
             <span className="font-semibold">Constructor</span>
           </Link>
-
           <div className="flex items-center gap-4">
             <Link href="/constructor/courses">
-              <Button variant="ghost" size="sm">My Courses</Button>
+              <Button variant="ghost" size="sm">
+                My Courses
+              </Button>
             </Link>
             <Button variant="ghost" size="sm" onClick={handleLogout}>
               <LogOut className="w-4 h-4" />
@@ -862,160 +1011,33 @@ export default function ConstructorDashboard() {
 
       <div className="flex-1 px-4 py-6">
         <div className="max-w-[1600px] mx-auto grid lg:grid-cols-5 gap-4">
-          {/* Left Sidebar - Session Progress */}
+
+          {/* ── Left Sidebar: File Upload ──────────────────────────────────── */}
           <div className="lg:col-span-1">
-            <div className="sticky top-24 space-y-4 max-h-[calc(100vh-8rem)] overflow-y-auto pr-2">
-              {/* Session Status Card */}
+            <div className="sticky top-24 space-y-4">
               <Card className="glass">
                 <CardHeader className="pb-3">
-                  <CardTitle className="text-sm font-medium">Session Progress</CardTitle>
+                  <CardTitle className="text-sm font-medium flex items-center gap-2">
+                    <Upload className="w-4 h-4" />
+                    Upload Materials
+                  </CardTitle>
+                  <CardDescription className="text-xs">
+                    PDFs, slides, videos, documents
+                  </CardDescription>
                 </CardHeader>
-                <CardContent className="space-y-4">
-                <div className="space-y-2">
-                  <div className="flex justify-between text-sm">
-                    <span className="text-muted-foreground">Status</span>
-                    <span className={cn(
-                      "flex items-center gap-1.5",
-                      isConnected ? "text-green-500" : "text-yellow-500"
-                    )}>
-                      <span className="connection-dot connected" />
+                <CardContent className="space-y-3">
+                  <div className="flex items-center gap-1.5 text-xs">
+                    <span
+                      className={cn(
+                        "w-1.5 h-1.5 rounded-full shrink-0",
+                        isConnected ? "bg-green-400" : "bg-yellow-400 animate-pulse",
+                      )}
+                    />
+                    <span className={isConnected ? "text-green-400" : "text-yellow-400"}>
                       {isConnected ? "Connected" : "Reconnecting..."}
                     </span>
                   </div>
-                  {phase && (
-                    <div className="flex justify-between text-sm">
-                      <span className="text-muted-foreground">Phase</span>
-                      <span className="capitalize">{phase}</span>
-                    </div>
-                  )}
-                </div>
 
-                {progress > 0 && (
-                  <div className="space-y-2">
-                    <div className="flex justify-between text-sm">
-                      <span className="text-muted-foreground">Completion</span>
-                      <span>{progress.toFixed(0)}%</span>
-                    </div>
-                    <Progress value={progress} className="h-2" />
-                  </div>
-                )}
-
-                {/* Current Agent Display */}
-                {currentAgent && (
-                  <div className="space-y-2">
-                    <div className="flex items-center gap-2 text-sm">
-                      <Bot className={cn(
-                        "w-4 h-4",
-                        isSubagentWorking ? "text-purple-500" : "text-primary"
-                      )} />
-                      <span className="text-muted-foreground">Working:</span>
-                    </div>
-                    <div className={cn(
-                      "text-sm font-medium px-2 py-1.5 rounded-md",
-                      isSubagentWorking
-                        ? "bg-purple-500/20 text-purple-300 border border-purple-500/30"
-                        : "bg-primary/20 text-primary border border-primary/30"
-                    )}>
-                      {currentAgent}
-                    </div>
-                  </div>
-                )}
-
-                {/* Recent Tool Calls */}
-                {recentToolCalls.length > 0 && (
-                  <div className="space-y-2">
-                    <div className="flex items-center gap-2 text-sm">
-                      <Wrench className="w-4 h-4 text-yellow-500" />
-                      <span className="text-muted-foreground">Running Tools:</span>
-                    </div>
-                    <div className="space-y-1.5">
-                      {recentToolCalls.map((call, idx) => (
-                        <div
-                          key={`${call.tool}-${idx}`}
-                          className="flex items-center gap-2 text-xs bg-yellow-500/10 border border-yellow-500/20 rounded px-2 py-1"
-                        >
-                          <Loader2 className="w-3 h-3 animate-spin text-yellow-500" />
-                          <span className="font-mono truncate">{call.tool}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Recent Tool Results */}
-                {recentToolResults.length > 0 && (
-                  <div className="space-y-2">
-                    <div className="flex items-center gap-2 text-sm">
-                      <CheckCircle2 className="w-4 h-4 text-green-500" />
-                      <span className="text-muted-foreground">Completed:</span>
-                    </div>
-                    <div className="space-y-1.5">
-                      {recentToolResults.map((result, idx) => (
-                        <div
-                          key={`${result.tool}-${idx}`}
-                          className="flex items-center gap-2 text-xs bg-green-500/10 border border-green-500/20 rounded px-2 py-1"
-                        >
-                          <ChevronRight className="w-3 h-3 text-green-500" />
-                          <span className="font-mono truncate">{result.tool}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Active Subagents */}
-                {Array.from(subagents.values()).filter(s => s.status === "running" || s.status === "pending").length > 0 && (
-                  <div className="space-y-2">
-                    <div className="flex items-center gap-2 text-sm">
-                      <Bot className="w-4 h-4 text-purple-500" />
-                      <span className="text-muted-foreground">Active Subagents:</span>
-                    </div>
-                    <div className="space-y-2 max-h-64 overflow-y-auto">
-                      {Array.from(subagents.values())
-                        .filter(s => s.status === "running" || s.status === "pending")
-                        .map((subagent) => (
-                          <SubagentCard key={subagent.id} subagent={subagent} />
-                        ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Completed Subagents (show last 2) */}
-                {Array.from(subagents.values()).filter(s => s.status === "complete" || s.status === "error").length > 0 && (
-                  <div className="space-y-2">
-                    <Separator />
-                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                      <CheckCircle2 className="w-4 h-4" />
-                      <span>Recent Activity</span>
-                    </div>
-                    <div className="space-y-2 max-h-40 overflow-y-auto">
-                      {Array.from(subagents.values())
-                        .filter(s => s.status === "complete" || s.status === "error")
-                        .slice(-2)
-                        .reverse()
-                        .map((subagent) => (
-                          <div
-                            key={subagent.id}
-                            className={cn(
-                              "flex items-center gap-2 text-xs px-2 py-1 rounded",
-                              subagent.status === "complete"
-                                ? "bg-green-500/10 text-green-400"
-                                : "bg-red-500/10 text-red-400"
-                            )}
-                          >
-                            <CheckCircle2 className="w-3 h-3" />
-                            <span>{subagent.subagent_type.replace(/_/g, " ")}</span>
-                          </div>
-                        ))}
-                    </div>
-                  </div>
-                )}
-
-                <Separator />
-
-                {/* File Upload */}
-                <div className="space-y-3">
-                  <Label>Upload Materials</Label>
                   <Button
                     variant="outline"
                     size="sm"
@@ -1023,7 +1045,7 @@ export default function ConstructorDashboard() {
                     onClick={() => fileInputRef.current?.click()}
                   >
                     <Upload className="w-4 h-4 mr-2" />
-                    Upload Files
+                    Choose Files
                   </Button>
                   <input
                     ref={fileInputRef}
@@ -1033,120 +1055,127 @@ export default function ConstructorDashboard() {
                     className="hidden"
                     onChange={(e) => e.target.files && handleFileUpload(e.target.files)}
                   />
-                  <p className="text-xs text-muted-foreground">
-                    PDFs, PPTs, Videos supported
-                  </p>
-                </div>
                 </CardContent>
               </Card>
 
-            {/* Uploaded Files */}
-            {uploadedFiles.length > 0 && (
-              <Card className="glass">
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-sm font-medium">Uploaded Files</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <ScrollArea className="h-20">
+              {/* Uploaded Files */}
+              {uploadedFiles.length > 0 && (
+                <Card className="glass">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-xs font-medium text-muted-foreground">
+                      Uploaded Files
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
                     <div className="space-y-2">
                       {uploadedFiles.map((file) => (
                         <div
                           key={file.id}
-                          className="flex items-center gap-2 p-2 rounded-lg bg-muted/30 text-sm"
+                          className="flex items-center gap-2 p-2 rounded-lg bg-muted/30 text-xs"
                         >
                           {getFileIcon(file.type)}
                           <span className="flex-1 truncate">{file.name}</span>
-                          <span className="text-xs text-muted-foreground">
+                          <span className="text-muted-foreground shrink-0">
                             {formatFileSize(file.size)}
                           </span>
                           {file.status === "completed" && (
-                            <CheckCircle2 className="w-4 h-4 text-green-500" />
+                            <CheckCircle2 className="w-3.5 h-3.5 text-green-500 shrink-0" />
                           )}
-                          {file.status === "processing" && (
-                            <Loader2 className="w-4 h-4 animate-spin text-primary" />
+                          {(file.status === "processing" || file.status === "uploading") && (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin text-primary shrink-0" />
                           )}
                         </div>
                       ))}
                     </div>
-                  </ScrollArea>
-                </CardContent>
-              </Card>
-            )}
+                  </CardContent>
+                </Card>
+              )}
             </div>
           </div>
 
-          {/* Main Chat Area */}
+          {/* ── Center: Chat + Timeline ────────────────────────────────────── */}
           <div className="lg:col-span-3">
             <Card className="min-h-[calc(100vh-13rem)] flex flex-col glass">
               <CardHeader className="pb-3">
                 <div className="flex items-center justify-between">
                   <div>
                     <CardTitle>Course Constructor</CardTitle>
-                    <CardDescription>
-                      Build your course with AI assistance
-                    </CardDescription>
+                    <CardDescription>Build your course with AI assistance</CardDescription>
                   </div>
-                  <div className="flex items-center gap-3">
-                    {/* Agent working indicator */}
-                    {(isAgentThinking || currentAgent) && (
-                      <div className="flex items-center gap-1.5 text-xs px-2 py-1 rounded-full bg-purple-500/10 border border-purple-500/20">
-                        <span className={cn(
-                          "w-1.5 h-1.5 rounded-full",
-                          isAgentThinking ? "bg-purple-500 animate-ping" : "bg-purple-500"
-                        )} />
-                        <span className="text-purple-300">
-                          {currentAgent || "Working"}
-                        </span>
-                      </div>
-                    )}
-                    {/* Connection status */}
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-muted-foreground">
-                        {isConnected ? "Online" : "Connecting..."}
-                      </span>
-                      <div
-                        className={cn(
-                          "w-2.5 h-2.5 rounded-full transition-colors duration-300",
-                          isConnected
-                            ? "bg-green-500 agent-alive-dot"
-                            : "bg-yellow-500 animate-pulse"
-                        )}
-                      />
+                  {(isAgentThinking || currentAgent) && (
+                    <div className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-purple-500/10 border border-purple-500/20">
+                      <span className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-pulse" />
+                      <span className="text-purple-300">{currentAgent || "Working"}</span>
                     </div>
-                  </div>
+                  )}
                 </div>
               </CardHeader>
 
               <CardContent className="flex flex-col p-4 min-h-[inherit]">
-                {/* Messages */}
-                <div className="flex-1 space-y-6 mb-4 min-h-[200px]">
-                  {messages.map((message) => (
-                    <div
-                      key={message.id}
-                      className={cn(
-                        "flex animate-fade-in",
-                        message.role === "user" ? "justify-end" : "justify-start"
-                      )}
-                    >
-                      <div
-                        className={cn(
-                          "max-w-[80%] rounded-2xl px-4 py-3",
-                          message.role === "user"
-                            ? "bg-primary text-primary-foreground rounded-br-sm"
-                            : "bg-muted text-foreground rounded-bl-sm"
-                        )}
-                      >
-                        {message.role === "assistant" ? (
-                          <ChatMarkdown content={message.content} />
-                        ) : (
-                          <p className="whitespace-pre-wrap">{message.content}</p>
-                        )}
-                        {message.isStreaming && (
-                          <span className="inline-block w-1 h-4 bg-current animate-pulse ml-1" />
-                        )}
-                      </div>
-                    </div>
-                  ))}
+                <div className="flex-1 space-y-4 mb-4 min-h-[200px]">
+                  {chatItems.map((item) => {
+                    // Regular message bubble
+                    if (item.kind === "message") {
+                      const msg = item as ChatMessage
+                      return (
+                        <div
+                          key={msg.id}
+                          className={cn(
+                            "flex animate-fade-in",
+                            msg.role === "user" ? "justify-end" : "justify-start",
+                          )}
+                        >
+                          <div
+                            className={cn(
+                              "max-w-[80%] rounded-2xl px-4 py-3",
+                              msg.role === "user"
+                                ? "bg-primary text-primary-foreground rounded-br-sm"
+                                : "bg-muted text-foreground rounded-bl-sm",
+                            )}
+                          >
+                            {msg.role === "assistant" ? (
+                              <ChatMarkdown content={msg.content} />
+                            ) : (
+                              <p className="whitespace-pre-wrap">{msg.content}</p>
+                            )}
+                            {msg.isStreaming && (
+                              <span className="inline-block w-1 h-4 bg-current animate-pulse ml-1" />
+                            )}
+                          </div>
+                        </div>
+                      )
+                    }
+
+                    // Sub-agent activity timeline entry
+                    if (item.kind === "subagent_activity") {
+                      return (
+                        <SubagentActivityEntry
+                          key={(item as ChatSubagentActivity).id}
+                          activity={item as ChatSubagentActivity}
+                          onToggle={handleToggleActivity}
+                        />
+                      )
+                    }
+
+                    // Todo completion notification
+                    if (item.kind === "todo_complete") {
+                      const tc = item as ChatTodoComplete
+                      return (
+                        <div key={tc.id} className="flex justify-center animate-fade-in">
+                          <div className="flex items-center gap-2 text-xs px-3 py-1.5 rounded-full bg-green-500/10 border border-green-500/20 text-green-400">
+                            <CheckCircle2 className="w-3 h-3 shrink-0" />
+                            <span>
+                              Completed: <span className="font-medium">{tc.task}</span>
+                            </span>
+                          </div>
+                        </div>
+                      )
+                    }
+
+                    return null
+                  })}
+
+                  {/* Typing indicator (before first token arrives) */}
                   {isLoading && (
                     <div className="flex justify-start">
                       <div className="max-w-[80%] rounded-2xl px-4 py-3 bg-muted">
@@ -1158,59 +1187,63 @@ export default function ConstructorDashboard() {
                       </div>
                     </div>
                   )}
-                  {isAgentThinking && !isLoading && currentAgent && (
-                    <div className="flex justify-start animate-fade-in">
-                      <div className="max-w-[80%] rounded-2xl px-4 py-3 bg-purple-500/10 border border-purple-500/20">
-                        <div className="flex items-center gap-2 text-sm">
-                          <Bot className="w-4 h-4 text-purple-500 animate-pulse" />
-                          <span className="text-purple-300">
-                            {currentAgent} is working...
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                  <div ref={messagesEndRef} />
+
+                  <div ref={chatEndRef} />
                 </div>
 
                 {/* Input */}
                 <div className="border-t border-border/50 pt-4">
-                  <div className="flex gap-2">
-                    <Textarea
-                      ref={textareaRef}
-                      placeholder="Tell me about your course..."
-                      value={inputMessage}
-                      onChange={(e) => setInputMessage(e.target.value)}
-                      onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && (e.preventDefault(), handleSendMessage())}
-                      className="flex-1 min-h-[44px] max-h-40 overflow-y-auto"
-                    />
-                    <Button
-                      onClick={handleSendMessage}
-                      disabled={!inputMessage.trim() || isLoading}
-                      size="icon"
-                      className="button-press shrink-0"
-                    >
-                      <Send className="w-4 h-4" />
-                    </Button>
-                  </div>
+                  {(() => {
+                    const isGenerating =
+                      isLoading ||
+                      chatItems.some(
+                        (item) => item.kind === "message" && (item as ChatMessage).isStreaming,
+                      )
+                    return (
+                      <div className="flex gap-2">
+                        <Textarea
+                          ref={textareaRef}
+                          placeholder="Tell me about your course..."
+                          value={inputMessage}
+                          onChange={(e) => setInputMessage(e.target.value)}
+                          onKeyDown={(e) =>
+                            e.key === "Enter" &&
+                            !e.shiftKey &&
+                            (e.preventDefault(), handleSendMessage())
+                          }
+                          className="flex-1 min-h-[44px] max-h-40 overflow-y-auto"
+                        />
+                        <Button
+                          onClick={handleSendMessage}
+                          disabled={!inputMessage.trim() || isGenerating}
+                          size="icon"
+                          className="button-press shrink-0 rounded-full"
+                        >
+                          {isGenerating ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <ArrowUp className="w-4 h-4" />
+                          )}
+                        </Button>
+                      </div>
+                    )
+                  })()}
                 </div>
               </CardContent>
             </Card>
           </div>
 
-          {/* Right Sidebar - TODO List */}
+          {/* ── Right Sidebar: Todos + Agent Graph ────────────────────────── */}
           <div className="lg:col-span-1">
             <div className="sticky top-24 space-y-4 max-h-[calc(100vh-8rem)] overflow-y-auto pl-2">
-              {/* TODO List Card */}
+              {/* Agent Tasks */}
               <Card className="glass">
                 <CardHeader className="pb-3">
                   <CardTitle className="text-sm font-medium flex items-center gap-2">
                     <CheckCircle2 className="w-4 h-4 text-primary" />
                     Agent Tasks
                   </CardTitle>
-                  <CardDescription className="text-xs">
-                    Main agent progress tracking
-                  </CardDescription>
+                  <CardDescription className="text-xs">Main agent progress</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-2">
                   {todos.length === 0 ? (
@@ -1220,16 +1253,15 @@ export default function ConstructorDashboard() {
                     </div>
                   ) : (
                     <>
-                      {/* Progress bar */}
                       <div className="space-y-1.5 pb-2 border-b border-border/50">
                         <div className="flex justify-between text-xs">
                           <span className="text-muted-foreground">Progress</span>
                           <span className="font-mono">
-                            {todos.filter(t => t.status === "completed").length}/{todos.length}
+                            {completedTodos}/{todos.length}
                           </span>
                         </div>
                         <Progress
-                          value={(todos.filter(t => t.status === "completed").length / todos.length) * 100}
+                          value={(completedTodos / todos.length) * 100}
                           className="h-1.5"
                         />
                       </div>
@@ -1241,17 +1273,19 @@ export default function ConstructorDashboard() {
                               "flex items-start gap-2 p-2 rounded-lg text-xs border transition-all",
                               todo.status === "completed"
                                 ? "bg-green-500/10 border-green-500/20 opacity-60"
-                                : "bg-muted/30 border-border/50"
+                                : "bg-muted/30 border-border/50",
                             )}
                           >
-                            <div className={cn(
-                              "flex-shrink-0 mt-0.5",
-                              todo.status === "completed"
-                                ? "text-green-500"
-                                : todo.status === "in_progress"
-                                  ? "text-blue-500 animate-pulse"
-                                  : "text-muted-foreground"
-                            )}>
+                            <div
+                              className={cn(
+                                "flex-shrink-0 mt-0.5",
+                                todo.status === "completed"
+                                  ? "text-green-500"
+                                  : todo.status === "in_progress"
+                                    ? "text-blue-500"
+                                    : "text-muted-foreground",
+                              )}
+                            >
                               {todo.status === "completed" ? (
                                 <CheckCircle2 className="w-3.5 h-3.5" />
                               ) : todo.status === "in_progress" ? (
@@ -1260,14 +1294,16 @@ export default function ConstructorDashboard() {
                                 <Circle className="w-3.5 h-3.5" />
                               )}
                             </div>
-                            <div className="flex-1 min-w-0">
-                              <p className={cn(
+                            <p
+                              className={cn(
                                 "text-xs font-medium",
-                                todo.status === "completed" ? "line-through text-muted-foreground" : ""
-                              )}>
-                                {todo.task}
-                              </p>
-                            </div>
+                                todo.status === "completed"
+                                  ? "line-through text-muted-foreground"
+                                  : "",
+                              )}
+                            >
+                              {todo.task}
+                            </p>
                           </div>
                         ))}
                       </div>
@@ -1276,45 +1312,31 @@ export default function ConstructorDashboard() {
                 </CardContent>
               </Card>
 
-              {/* Quick Status */}
+              {/* Agent Hierarchy Graph */}
               <Card className="glass">
                 <CardHeader className="pb-3">
-                  <CardTitle className="text-sm font-medium">Workflow Status</CardTitle>
+                  <CardTitle className="text-sm font-medium flex items-center gap-2">
+                    <Bot className="w-4 h-4 text-primary" />
+                    Agent Graph
+                  </CardTitle>
+                  <CardDescription className="text-xs">Active agents</CardDescription>
                 </CardHeader>
-                <CardContent className="space-y-3">
-                  <div className="space-y-1">
-                    <div className="flex justify-between text-xs">
-                      <span className="text-muted-foreground">Messages</span>
-                      <span className="font-mono">{messages.length}</span>
-                    </div>
-                    <div className="flex justify-between text-xs">
-                      <span className="text-muted-foreground">Files</span>
-                      <span className="font-mono">{uploadedFiles.length}</span>
-                    </div>
-                    <div className="flex justify-between text-xs">
-                      <span className="text-muted-foreground">Subagents</span>
-                      <span className="font-mono">{Array.from(subagents.values()).filter(s => s.status === "running").length} active</span>
-                    </div>
-                  </div>
-
-                  {phase && (
-                    <div className="pt-2 border-t border-border/50">
-                      <div className="text-xs text-muted-foreground mb-1">Current Phase</div>
-                      <div className="text-xs font-medium capitalize">{phase}</div>
-                      {progress > 0 && (
-                        <Progress value={progress} className="h-1 mt-2" />
-                      )}
-                    </div>
-                  )}
+                <CardContent>
+                  <AgentHierarchyGraph subagents={subagents} isMainActive={isMainActive} />
                 </CardContent>
               </Card>
             </div>
           </div>
+
         </div>
       </div>
 
       {/* Question Modal */}
-      <Dialog open={questionModal.isOpen} onOpenChange={(open) => !open && setQuestionModal(prev => ({ ...prev, isOpen: false }))}>
+      <Dialog
+        key={questionModal.questionId}
+        open={questionModal.isOpen}
+        onOpenChange={(open) => setQuestionModal((prev) => ({ ...prev, isOpen: open }))}
+      >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="text-lg">Question</DialogTitle>
@@ -1323,7 +1345,6 @@ export default function ConstructorDashboard() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 py-4">
-            {/* Choice buttons */}
             {questionModal.choices.map((choice, index) => (
               <Button
                 key={index}
@@ -1339,15 +1360,13 @@ export default function ConstructorDashboard() {
                 </span>
               </Button>
             ))}
-
-            {/* Other option with input */}
             <div className="space-y-2 pt-2 border-t">
               <Label className="text-sm text-muted-foreground">Other (type your answer):</Label>
               <div className="flex gap-2">
                 <Input
                   placeholder="Type your custom answer..."
                   value={questionModal.otherValue}
-                  onChange={(e) => setQuestionModal(prev => ({ ...prev, otherValue: e.target.value }))}
+                  onChange={(e) => setQuestionModal((prev) => ({ ...prev, otherValue: e.target.value }))}
                   onKeyDown={(e) => e.key === "Enter" && handleOtherAnswer()}
                   className="flex-1"
                 />

@@ -1,6 +1,8 @@
 """Constructor API endpoints for course creation workflow."""
 
+import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -107,6 +109,68 @@ def _get_agent_name_from_namespace(namespace: tuple) -> str:
             return "Sub-Agent"
 
     return "Unknown Agent"
+
+
+def _coerce_json_dict(value: Any) -> dict[str, Any]:
+    """Best-effort conversion of tool payloads into a dict."""
+    # Tool outputs may arrive as rich objects (e.g., with .content or model_dump()).
+    if hasattr(value, "content"):
+        nested = _coerce_json_dict(getattr(value, "content"))
+        if nested:
+            return nested
+    if hasattr(value, "model_dump") and callable(getattr(value, "model_dump")):
+        try:
+            nested = _coerce_json_dict(value.model_dump())
+            if nested:
+                return nested
+        except Exception:
+            pass
+
+    if isinstance(value, dict):
+        # Common wrapper shape: {"content": "{\"question_id\": ...}"}
+        if "content" in value and "question_id" not in value:
+            nested = _coerce_json_dict(value.get("content"))
+            if nested:
+                return nested
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                return parsed
+        except (json.JSONDecodeError, TypeError):
+            return {}
+    return {}
+
+
+def _extract_tool_name_and_args(event_name: str, event_data: dict[str, Any]) -> tuple[str, Any]:
+    """Extract tool name and args from deepagents/langchain tool event payloads."""
+    raw_input = event_data.get("input", {})
+    tool_name = event_name
+
+    if isinstance(raw_input, dict):
+        maybe_name = raw_input.get("name")
+        if isinstance(maybe_name, str) and maybe_name:
+            tool_name = maybe_name
+
+        # Some payloads are {"name": "...", "args": {...}}, others are plain args.
+        raw_args = raw_input.get("args", raw_input)
+        if isinstance(raw_args, (dict, list)):
+            return tool_name, raw_args
+        return tool_name, _coerce_json_dict(raw_args)
+
+    if isinstance(raw_input, list):
+        return tool_name, raw_input
+
+    return tool_name, _coerce_json_dict(raw_input)
+
+
+def _extract_tool_run_id(event: dict[str, Any], event_data: dict[str, Any]) -> Optional[str]:
+    """Extract tool run_id from event-level or data-level payload."""
+    run_id = event.get("run_id") or event_data.get("run_id")
+    if run_id is None:
+        return None
+    return str(run_id)
 
 
 # ==============================================================================
@@ -243,7 +307,6 @@ async def constructor_websocket(
 
             # Parse JSON from text frame
             if "text" in raw_data:
-                import json
                 try:
                     data = json.loads(raw_data["text"])
                 except json.JSONDecodeError as je:
@@ -477,42 +540,19 @@ async def constructor_websocket(
 
                         # Tool call started
                         elif event_type == "on_tool_start":
-                            tool_name = event_data.get("input", {}).get("name", event_name)
-                            tool_args = event_data.get("input", {}).get("args", {})
-                            tool_call_id = event_data.get("run_id")
+                            tool_name, tool_args = _extract_tool_name_and_args(event_name, event_data)
+                            tool_call_id = _extract_tool_run_id(event, event_data)
 
                             if tool_name:
-                                pending_tools[tool_call_id] = tool_name
+                                if tool_call_id:
+                                    pending_tools[tool_call_id] = tool_name
 
                                 # Debug: log all tool starts temporarily
                                 logger.info(f"Tool start: {tool_name}, args keys: {list(tool_args.keys()) if isinstance(tool_args, dict) else 'not a dict'}")
 
-                                # Handle ask_user tool - send question to frontend as popup
+                                # ask_user popup is emitted on tool_end so we can use the real question_id.
                                 if tool_name == "ask_user":
-                                    import json
                                     logger.info(f"ask_user detected! tool_args: {tool_args}")
-                                    # Extract question and choices from tool_args
-                                    question = tool_args.get("question", "")
-                                    choices = tool_args.get("choices", [])
-
-                                    # Try nested keys as well
-                                    if not question:
-                                        for key in ["arg__question", "input"]:
-                                            if key in tool_args and isinstance(tool_args[key], str):
-                                                question = tool_args[key]
-                                                break
-                                    if not choices:
-                                        for key in ["arg__choices", "input"]:
-                                            if key in tool_args and isinstance(tool_args[key], list):
-                                                choices = tool_args[key]
-                                                break
-
-                                    if question:
-                                        # Generate a temporary question_id for tracking
-                                        # The actual question_id will be in the tool output
-                                        temp_question_id = f"q_{int(time.time() * 1000)}"
-                                        await manager.send_question(session_id, temp_question_id, question, choices)
-                                        logger.info(f"Sent question popup: {question}")
 
                                 # Debug: log write_todos specifically - CRITICAL FOR IMMEDIATE UPDATE
                                 if tool_name == "write_todos":
@@ -520,7 +560,9 @@ async def constructor_websocket(
                                     # Handle write_todos IMMEDIATELY to update frontend
                                     # The todos can be in different formats depending on how deepagents passes them
                                     todos_list = None
-                                    if isinstance(tool_args, dict):
+                                    if isinstance(tool_args, list):
+                                        todos_list = tool_args
+                                    elif isinstance(tool_args, dict):
                                         # Try different keys where todos might be
                                         for key in ["todos", "arg__todos", "input", "__arg__todos"]:
                                             if key in tool_args:
@@ -535,7 +577,7 @@ async def constructor_websocket(
                                         await _send_parsed_todos(session_id, todos_list, manager)
 
                                 # Skip internal tools from UI (but write_todos and ask_user are handled above)
-                                if tool_name not in ("task", "write_todos", "ask_user", "read_file", "write_file", "edit_file", "glob", "grep", "ls", "execute"):
+                                if tool_name not in ("task", "write_todos", "ask_user", "get_user_answer", "read_file", "write_file", "edit_file", "glob", "grep", "ls", "execute"):
                                     await manager.send_tool_call(
                                         session_id,
                                         tool=tool_name,
@@ -552,22 +594,47 @@ async def constructor_websocket(
                                     active_subagents[subagent_id] = {
                                         "type": "task",
                                         "display_name": current_subagent or "Sub-Agent",
-                                        "description": tool_args.get("description", ""),
+                                        "description": tool_args.get("description", "") if isinstance(tool_args, dict) else "",
                                         "started_at": event_data.get("time"),
                                     }
 
                         # Tool ended
                         elif event_type == "on_tool_end":
                             tool_name = event_name
-                            tool_call_id = event_data.get("run_id")
+                            tool_call_id = _extract_tool_run_id(event, event_data)
                             tool_output = event_data.get("output", "")
 
                             # Resolve tool name from pending if needed
                             if tool_call_id and tool_call_id in pending_tools:
                                 tool_name = pending_tools.pop(tool_call_id)
 
+                            # Handle ask_user completion - now we have the real question_id from tool output.
+                            if tool_name == "ask_user":
+                                tool_output_dict = _coerce_json_dict(tool_output)
+                                question_id = tool_output_dict.get("question_id")
+                                if not isinstance(question_id, str):
+                                    # Fallback for repr-style outputs like:
+                                    # content='{"question_id":"..."}' name='ask_user'
+                                    match = re.search(r'"question_id"\s*:\s*"([^"]+)"', str(tool_output))
+                                    if match:
+                                        question_id = match.group(1)
+                                if isinstance(question_id, str) and question_id:
+                                    pending_question = get_pending_question(question_id)
+                                    if pending_question:
+                                        await manager.send_question(
+                                            session_id,
+                                            question_id=question_id,
+                                            question=str(pending_question.get("question", "")),
+                                            choices=pending_question.get("choices", []) or [],
+                                        )
+                                        logger.info(f"Sent ask_user popup with question_id={question_id}")
+                                    else:
+                                        logger.warning(f"ask_user returned {question_id} but pending question was not found")
+                                else:
+                                    logger.warning(f"ask_user output missing question_id: {tool_output}")
+
                             # Skip internal tools from UI
-                            if tool_name not in ("task", "write_todos", "read_file", "write_file", "edit_file", "glob", "grep", "ls", "execute"):
+                            if tool_name not in ("task", "write_todos", "ask_user", "get_user_answer", "read_file", "write_file", "edit_file", "glob", "grep", "ls", "execute"):
                                 await manager.send_tool_result(
                                     session_id,
                                     tool=tool_name,

@@ -289,7 +289,7 @@ class ConnectionManager:
     ) -> bool:
         """Send tool result event."""
         # Convert result to string if it's too large or complex
-        result_str = str(result)
+        result_str = str(result)  # Pass through directly
         if len(result_str) > 1000:
             result_str = result_str[:1000] + "... (truncated)"
 

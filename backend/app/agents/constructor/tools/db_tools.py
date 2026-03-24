@@ -493,12 +493,13 @@ def get_uploaded_files(creator_id: int, course_id: int) -> str:
 
     files = []
 
-    # Look for files in the specific course folder
+    # Look for files in the specific course folder (recursively)
     course_dir = constructor_base / str(course_id)
     logger.info(f"[get_uploaded_files] Looking in course_dir: {course_dir}")
 
     if course_dir.exists():
-        for file_path in course_dir.iterdir():
+        # Use rglob to recursively find all files (handles any nested structure)
+        for file_path in course_dir.rglob("*"):
             if file_path.is_file():
                 files.append(_parse_file_info(file_path))
 

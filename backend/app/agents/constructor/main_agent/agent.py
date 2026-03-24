@@ -26,6 +26,8 @@ from app.agents.constructor.tools.ingestion_tools import (
     extract_text_from_slides,
     transcribe_video_file,
     extract_text_from_document,
+    save_raw_content_to_file,
+    organize_content_file,
 )
 from .prompts import (
     MAIN_COORDINATOR_PROMPT,
@@ -56,6 +58,7 @@ structure_sub_agent = {
     "tools": [
         save_module,
         save_unit,
+        organize_content_file,
     ],
 }
 
@@ -70,6 +73,7 @@ ingestion_sub_agent = {
         extract_text_from_slides,
         transcribe_video_file,
         extract_text_from_document,
+        save_raw_content_to_file,
     ],
 }
 
