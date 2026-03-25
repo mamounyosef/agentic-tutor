@@ -570,6 +570,7 @@ export default function ConstructorDashboard() {
       // ── subagent_start ─────────────────────────────────────────────────────
       } else if (data.type === "subagent_start") {
         const subagentType: string = data.subagent_type || "Unknown"
+        console.log(`[subagent_start] subagentType="${subagentType}"`)
 
         setSubagents((prev) => {
           const existing = prev.get(subagentType)
@@ -588,7 +589,10 @@ export default function ConstructorDashboard() {
               (item as ChatSubagentActivity).subagent_type === subagentType &&
               (item as ChatSubagentActivity).status === "running",
           )
-          if (alreadyRunning) return prev
+          if (alreadyRunning) {
+            console.log(`[subagent_start] Already running, skipping`)
+            return prev
+          }
           const newActivity: ChatSubagentActivity = {
             kind: "subagent_activity",
             id: `${subagentType}-${Date.now()}`,
@@ -600,6 +604,7 @@ export default function ConstructorDashboard() {
             error: null,
             isExpanded: true,
           }
+          console.log(`[subagent_start] Created new activity for "${subagentType}"`)
           return [...prev, newActivity]
         })
 

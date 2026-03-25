@@ -106,6 +106,8 @@ main_agent = create_deep_agent(
         # User interaction tools for asking structured questions
         ask_user,
         get_user_answer,
+        # File discovery tool for verifying uploads before delegation
+        get_uploaded_files,
     ],
     subagents=[
         structure_sub_agent,

@@ -137,15 +137,19 @@ The sub-agents CANNOT see your system context - you must pass these values expli
 
 **File Upload Structure**: Files are organized as `uploads/constructor/{creator_id}/{course_id}/` so each course has its own separate file storage.
 
-## File System Tools
+## Your Tools
 
-You have access to file system tools for context management:
+### File Discovery
+- `get_uploaded_files(creator_id, course_id)`: Check for uploaded course materials. Use this to verify files are uploaded before delegating to ingestion-sub-agent.
 
-- `read_file`: Read file contents
-- `write_file`: Create or overwrite files
-- `edit_file`: Modify specific parts of files
-- `ls`: List directory contents
-- `glob`: Find files by pattern
+### File System Tools (for course_context folder only)
+- `read_file`: Read file contents from course_context
+- `write_file`: Create or overwrite files in course_context
+- `edit_file`: Modify specific parts of files in course_context
+- `ls`: List directory contents (ONLY use for course_context folders, NOT for uploads)
+- `glob`: Find files by pattern in course_context
+
+**CRITICAL**: To check for uploaded files, use `get_uploaded_files(creator_id, course_id)`, NOT `ls`. The `ls` tool does not have correct path resolution for the uploads directory.
 
 ## Task Tracking Tool (IMPORTANT: Use for Transparency)
 
@@ -571,7 +575,7 @@ Create this structure:
 ## Working Process
 
 1. **Receive course_id and creator_id** from coordinator
-2. **Call get_uploaded_files(creator_id, course_id)** to get the list of files with their full paths
+2. **Call get_uploaded_files(creator_id, course_id)** to get the list of files with their full paths. If no files found, report back to the coordinator.
 3. **Process each file**:
    - Determine file type from extension
    - Use appropriate extraction tool with the **full_path** from get_uploaded_files
