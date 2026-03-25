@@ -9,7 +9,8 @@ from fastapi.responses import JSONResponse
 
 from .core.config import settings
 from .observability.langsmith import initialize_langsmith
-from .api import auth, constructor, tutor
+from .api import auth, constructor
+# from .api import auth, constructor, tutor  # Tutor disabled for now
 from .db.constructor.compat import ensure_constructor_schema_compatibility
 
 
@@ -56,7 +57,7 @@ def create_app() -> FastAPI:
     # Include routers
     app.include_router(auth.router, prefix=settings.API_V1_PREFIX, tags=["Authentication"])
     app.include_router(constructor.router, prefix=settings.API_V1_PREFIX, tags=["Constructor"])
-    app.include_router(tutor.router, prefix=settings.API_V1_PREFIX, tags=["Tutor"])
+    # app.include_router(tutor.router, prefix=settings.API_V1_PREFIX, tags=["Tutor"])  # Tutor disabled for now
 
     # Health check
     @app.get("/health")

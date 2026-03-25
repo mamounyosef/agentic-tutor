@@ -10,7 +10,6 @@ from deepagents import create_deep_agent
 
 from app.agents.base.llm import get_llm
 from app.agents.constructor.tools.db_tools import (
-    initialize_course,
     save_module,
     save_unit,
     save_material,
@@ -18,11 +17,17 @@ from app.agents.constructor.tools.db_tools import (
     save_quiz_question,
     get_uploaded_files,
 )
+from app.agents.constructor.tools.user_interaction_tools import (
+    ask_user,
+    get_user_answer,
+)
 from app.agents.constructor.tools.ingestion_tools import (
     extract_text_from_pdf,
     extract_text_from_slides,
     transcribe_video_file,
     extract_text_from_document,
+    save_raw_content_to_file,
+    organize_content_file,
 )
 from .prompts import (
     MAIN_COORDINATOR_PROMPT,
@@ -53,6 +58,7 @@ structure_sub_agent = {
     "tools": [
         save_module,
         save_unit,
+        organize_content_file,
     ],
 }
 
@@ -67,6 +73,7 @@ ingestion_sub_agent = {
         extract_text_from_slides,
         transcribe_video_file,
         extract_text_from_document,
+        save_raw_content_to_file,
     ],
 }
 
@@ -91,11 +98,16 @@ validation_sub_agent = {
 
 # Create the main coordinator agent with all sub-agents
 # LangSmith tracing will automatically track all agent runs, tool calls, and sub-agent delegation
+# Note: Course is auto-created at session start, so initialize_course is not needed here
 main_agent = create_deep_agent(
     model=llm,
     system_prompt=MAIN_COORDINATOR_PROMPT,
     tools=[
-        initialize_course,  # Only direct DB access for main agent
+        # User interaction tools for asking structured questions
+        ask_user,
+        get_user_answer,
+        # File discovery tool for verifying uploads before delegation
+        get_uploaded_files,
     ],
     subagents=[
         structure_sub_agent,

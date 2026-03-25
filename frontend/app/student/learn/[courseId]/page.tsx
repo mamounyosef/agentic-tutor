@@ -210,6 +210,11 @@ export default function StudentLearnPage({ params }: { params: { courseId: strin
         const isFirst = Boolean(data.metadata?.is_first)
         const isLast = Boolean(data.metadata?.is_last)
 
+        // Clear loading state when streaming completes
+        if (isLast) {
+          setIsLoading(false)
+        }
+
         // Streaming token
         setMessages((prev) => {
           if (isFirst) {
@@ -295,21 +300,25 @@ export default function StudentLearnPage({ params }: { params: { courseId: strin
     }
 
     setMessages((prev) => [...prev, userMessage])
+    const messageContent = inputMessage
     setInputMessage("")
+
+    // Set loading state in a separate update to ensure it takes effect
     setIsLoading(true)
 
     try {
       if (wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({
           type: "message",
-          message: userMessage.content,
+          message: messageContent,
           student_id: studentId,
           course_id: courseId,
         }))
+        // Don't clear loading here - it will be cleared when we receive the last token
         return
       }
 
-      const response = await tutorApi.chat(sessionId, userMessage.content)
+      const response = await tutorApi.chat(sessionId, messageContent)
       setMessages((prev) => [
         ...prev,
         {
@@ -322,8 +331,12 @@ export default function StudentLearnPage({ params }: { params: { courseId: strin
       toast.warning("WebSocket was not connected. Used HTTP fallback.")
     } catch (error: any) {
       toast.error(error.response?.data?.detail || "Failed to send message")
-    } finally {
       setIsLoading(false)
+    } finally {
+      // Only clear loading for HTTP fallback path
+      if (wsRef.current?.readyState !== WebSocket.OPEN) {
+        setIsLoading(false)
+      }
     }
   }
 
@@ -617,7 +630,11 @@ export default function StudentLearnPage({ params }: { params: { courseId: strin
                       size="icon"
                       className="button-press shrink-0"
                     >
-                      <Send className="w-4 h-4" />
+                      {isLoading ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Send className="w-4 h-4" />
+                      )}
                     </Button>
                   </div>
                 </div>

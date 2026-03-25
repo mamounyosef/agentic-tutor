@@ -236,3 +236,4 @@ dmypy.json
 
 # Profiling
 *.prof
+nul

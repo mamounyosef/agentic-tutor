@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(Path(__file__).parent.parent.parent.parent / ".env"),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -152,6 +152,12 @@ class Settings(BaseSettings):
         backend_dir = Path(__file__).parent.parent  # backend/app/ -> backend/
         base_path = (backend_dir / self.UPLOAD_PATH).resolve()
         return base_path
+
+    @property
+    def course_context_absolute_path(self) -> Path:
+        """Get the absolute base path for course context folders (project root/course_context)."""
+        backend_dir = Path(__file__).parent.parent  # backend/app/ -> backend/
+        return (backend_dir / "../course_context").resolve()
 
 
 def get_settings() -> Settings:

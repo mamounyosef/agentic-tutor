@@ -289,7 +289,7 @@ class ConnectionManager:
     ) -> bool:
         """Send tool result event."""
         # Convert result to string if it's too large or complex
-        result_str = str(result)
+        result_str = str(result)  # Pass through directly
         if len(result_str) > 1000:
             result_str = result_str[:1000] + "... (truncated)"
 
@@ -332,6 +332,24 @@ class ConnectionManager:
                 "type": "agent_change",
                 "agent": agent,
                 "is_subagent": is_subagent,
+            },
+        )
+
+    async def send_question(
+        self,
+        session_id: str,
+        question_id: str,
+        question: str,
+        choices: list[str],
+    ) -> bool:
+        """Send structured question to frontend (displays as popup modal)."""
+        return await self.broadcast_to_session(
+            session_id,
+            {
+                "type": "question",
+                "question_id": question_id,
+                "question": question,
+                "choices": choices,
             },
         )
 
