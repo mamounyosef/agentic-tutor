@@ -346,12 +346,14 @@ export default function ConstructorDashboard() {
     question: string
     choices: string[]
     otherValue: string
+    threadId: string | null
   }>({
     isOpen: false,
     questionId: null,
     question: "",
     choices: [],
     otherValue: "",
+    threadId: null,
   })
 
   const chatEndRef = useRef<HTMLDivElement>(null)
@@ -688,6 +690,7 @@ export default function ConstructorDashboard() {
       } else if (data.type === "tool_call") {
         if (data.tool === "task") return
         const agentName: string = data.agent || ""
+        console.log(`[tool_call] tool="${data.tool}" agent="${agentName}"`)
         const newCall: ActivityToolCall = {
           id: `${data.tool}-${Date.now()}`,
           tool: data.tool || "unknown",
@@ -697,6 +700,11 @@ export default function ConstructorDashboard() {
         }
 
         setChatItems((prev) => {
+          console.log(`[tool_call] Searching for running activity with agent="${agentName}"`)
+          console.log(`[tool_call] Current activities:`, prev.filter(i => i.kind === "subagent_activity").map(i => ({
+            type: (i as ChatSubagentActivity).subagent_type,
+            status: (i as ChatSubagentActivity).status
+          })))
           let lastRunningIdx = -1
           for (let i = 0; i < prev.length; i++) {
             const item = prev[i]
@@ -708,7 +716,11 @@ export default function ConstructorDashboard() {
               lastRunningIdx = i
             }
           }
-          if (lastRunningIdx === -1) return prev
+          if (lastRunningIdx === -1) {
+            console.log(`[tool_call] NO MATCHING ACTIVITY FOUND - tool call dropped`)
+            return prev
+          }
+          console.log(`[tool_call] Found activity at index ${lastRunningIdx}, adding tool call`)
           const activity = prev[lastRunningIdx] as ChatSubagentActivity
           return prev.map((item, i) =>
             i === lastRunningIdx
@@ -778,14 +790,17 @@ export default function ConstructorDashboard() {
 
       // ── question ───────────────────────────────────────────────────────────
       } else if (data.type === "question") {
-        console.log("Question:", data)
+        console.log("📋 QUESTION RECEIVED:", data)
+        console.log("Setting questionModal.isOpen = true")
         setQuestionModal({
           isOpen: true,
           questionId: data.question_id || null,
           question: data.question || "",
           choices: data.choices || [],
           otherValue: "",
+          threadId: data.thread_id || null,
         })
+        console.log("questionModal state updated")
 
       // ── validation ─────────────────────────────────────────────────────────
       } else if (data.type === "validation") {
@@ -849,32 +864,32 @@ export default function ConstructorDashboard() {
   }
 
   const handleQuestionAnswer = (choice: string) => {
-    if (!wsRef.current || !questionModal.questionId) return
+    if (!wsRef.current) return
     wsRef.current.send(
       JSON.stringify({
         type: "question_answer",
-        question_id: questionModal.questionId,
+        thread_id: questionModal.threadId,
         answer: choice,
         answer_type: "choice",
       }),
     )
-    setQuestionModal({ isOpen: false, questionId: null, question: "", choices: [], otherValue: "" })
+    setQuestionModal({ isOpen: false, questionId: null, question: "", choices: [], otherValue: "", threadId: null })
   }
 
   const handleOtherAnswer = () => {
-    if (!wsRef.current || !questionModal.questionId || !questionModal.otherValue.trim()) {
+    if (!wsRef.current || !questionModal.otherValue.trim()) {
       toast.error("Please enter your answer")
       return
     }
     wsRef.current.send(
       JSON.stringify({
         type: "question_answer",
-        question_id: questionModal.questionId,
+        thread_id: questionModal.threadId,
         answer: questionModal.otherValue.trim(),
         answer_type: "other",
       }),
     )
-    setQuestionModal({ isOpen: false, questionId: null, question: "", choices: [], otherValue: "" })
+    setQuestionModal({ isOpen: false, questionId: null, question: "", choices: [], otherValue: "", threadId: null })
   }
 
   const handleSendMessage = async () => {
@@ -1013,6 +1028,13 @@ export default function ConstructorDashboard() {
           </div>
         </div>
       </header>
+
+      {/* DEBUG: Question Modal State */}
+      {questionModal.isOpen && (
+        <div className="fixed top-20 left-1/2 transform -translate-x-1/2 bg-red-500 text-white px-8 py-4 text-2xl font-bold z-[10000] border-8 border-yellow-400">
+          ⚠️ QUESTION MODAL IS OPEN! Question: {questionModal.question}
+        </div>
+      )}
 
       <div className="flex-1 px-4 py-6">
         <div className="max-w-[1600px] mx-auto grid lg:grid-cols-5 gap-4">
@@ -1336,13 +1358,17 @@ export default function ConstructorDashboard() {
         </div>
       </div>
 
-      {/* Question Modal */}
+      {/* Question Modal - DEBUG VERSION */}
+      {console.log("🎯 RENDERING QUESTION MODAL - isOpen:", questionModal.isOpen, "question:", questionModal.question)}
       <Dialog
         key={questionModal.questionId}
         open={questionModal.isOpen}
-        onOpenChange={(open) => setQuestionModal((prev) => ({ ...prev, isOpen: open }))}
+        onOpenChange={(open) => {
+          console.log("📝 Dialog onOpenChange called with:", open)
+          setQuestionModal((prev) => ({ ...prev, isOpen: open }))
+        }}
       >
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-md" style={{ backgroundColor: "red", border: "10px solid yellow", zIndex: 9999 }}>
           <DialogHeader>
             <DialogTitle className="text-lg">Question</DialogTitle>
             <DialogDescription className="text-base text-foreground">

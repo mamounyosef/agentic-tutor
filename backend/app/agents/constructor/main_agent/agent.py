@@ -7,6 +7,7 @@ All agent invocations are traced with LangSmith for observability.
 """
 
 from deepagents import create_deep_agent
+from langgraph.checkpoint.memory import MemorySaver
 
 from app.agents.base.llm import get_llm
 from app.agents.constructor.tools.db_tools import (
@@ -19,7 +20,6 @@ from app.agents.constructor.tools.db_tools import (
 )
 from app.agents.constructor.tools.user_interaction_tools import (
     ask_user,
-    get_user_answer,
 )
 from app.agents.constructor.tools.ingestion_tools import (
     extract_text_from_pdf,
@@ -96,6 +96,9 @@ validation_sub_agent = {
     ],
 }
 
+# Create checkpointer for interrupt/resume support
+checkpointer = MemorySaver()
+
 # Create the main coordinator agent with all sub-agents
 # LangSmith tracing will automatically track all agent runs, tool calls, and sub-agent delegation
 # Note: Course is auto-created at session start, so initialize_course is not needed here
@@ -103,9 +106,8 @@ main_agent = create_deep_agent(
     model=llm,
     system_prompt=MAIN_COORDINATOR_PROMPT,
     tools=[
-        # User interaction tools for asking structured questions
+        # User interaction tool for asking structured questions (uses LangGraph interrupt)
         ask_user,
-        get_user_answer,
         # File discovery tool for verifying uploads before delegation
         get_uploaded_files,
     ],
@@ -115,6 +117,7 @@ main_agent = create_deep_agent(
         quiz_gen_sub_agent,
         validation_sub_agent,
     ],
+    checkpointer=checkpointer,  # Enable state persistence for interrupts
     name="constructor-main-agent",
 )
 

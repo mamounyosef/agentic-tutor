@@ -7,6 +7,7 @@ Uses faster-whisper for efficient transcription with good accuracy.
 import asyncio
 import logging
 import os
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Optional
@@ -16,6 +17,38 @@ import numpy as np
 from .config import get_settings
 
 logger = logging.getLogger(__name__)
+
+# Fix for NVIDIA CUDA DLL loading on Windows
+# Must be done before importing faster-whisper/ctranslate2
+if sys.platform == "win32":
+    try:
+        # Add all NVIDIA DLL directories to both PATH and DLL search path
+        import nvidia.cublas
+        import nvidia.cuda_nvrtc
+
+        nvidia_paths = []
+
+        # Add cublas DLLs
+        cublas_path = Path(nvidia.cublas.__path__[0]) / "bin"
+        if cublas_path.exists():
+            nvidia_paths.append(str(cublas_path))
+            os.add_dll_directory(str(cublas_path))
+            logger.info(f"Added cuBLAS DLL directory: {cublas_path}")
+
+        # Add cuda_nvrtc DLLs
+        nvrtc_path = Path(nvidia.cuda_nvrtc.__path__[0]) / "bin"
+        if nvrtc_path.exists():
+            nvidia_paths.append(str(nvrtc_path))
+            os.add_dll_directory(str(nvrtc_path))
+            logger.info(f"Added NVRTC DLL directory: {nvrtc_path}")
+
+        # Also add to PATH for good measure (some libraries check PATH)
+        if nvidia_paths:
+            os.environ["PATH"] = os.pathsep.join(nvidia_paths) + os.pathsep + os.environ.get("PATH", "")
+            logger.info(f"Added {len(nvidia_paths)} NVIDIA paths to PATH")
+
+    except (ImportError, AttributeError, OSError) as e:
+        logger.warning(f"Could not add NVIDIA DLL directories: {e}")
 
 settings = get_settings()
 

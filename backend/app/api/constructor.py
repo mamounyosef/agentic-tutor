@@ -21,10 +21,14 @@ from app.observability.langsmith import build_trace_config
 
 # Import Constructor agents
 from app.agents.constructor.main_agent.agent import main_agent
-from app.agents.constructor.tools.user_interaction_tools import (
-    submit_user_answer,
-    get_pending_question,
+from app.agents.constructor.thread_manager import (
+    get_or_create_thread,
+    store_interrupt,
+    get_interrupt,
+    clear_interrupt,
+    clear_session,
 )
+from langgraph.types import Command
 
 # Welcome message for new sessions
 WELCOME_MESSAGE = (
@@ -418,6 +422,9 @@ async def constructor_websocket(
 
                 # Stream the agent execution with subgraph support
                 try:
+                    # Get or create thread_id for this session (for LangGraph checkpointing/interrupts)
+                    thread_id = get_or_create_thread(session_id)
+
                     trace_config = build_trace_config(
                         thread_id=session_id,
                         tags=["constructor", "websocket"],
@@ -426,7 +433,10 @@ async def constructor_websocket(
                             "session_id": session_id,
                             "creator_id": resolved_creator_id,
                         },
-                        config={"recursion_limit": 1000},  # Increase recursion limit for deepagents
+                        config={
+                            "recursion_limit": 1000,  # Increase recursion limit for deepagents
+                            "configurable": {"thread_id": thread_id},  # Enable checkpointing for interrupts
+                        },
                     )
 
                     # Track subagent state for the stream
@@ -608,30 +618,8 @@ async def constructor_websocket(
                             if tool_call_id and tool_call_id in pending_tools:
                                 tool_name = pending_tools.pop(tool_call_id)
 
-                            # Handle ask_user completion - now we have the real question_id from tool output.
-                            if tool_name == "ask_user":
-                                tool_output_dict = _coerce_json_dict(tool_output)
-                                question_id = tool_output_dict.get("question_id")
-                                if not isinstance(question_id, str):
-                                    # Fallback for repr-style outputs like:
-                                    # content='{"question_id":"..."}' name='ask_user'
-                                    match = re.search(r'"question_id"\s*:\s*"([^"]+)"', str(tool_output))
-                                    if match:
-                                        question_id = match.group(1)
-                                if isinstance(question_id, str) and question_id:
-                                    pending_question = get_pending_question(question_id)
-                                    if pending_question:
-                                        await manager.send_question(
-                                            session_id,
-                                            question_id=question_id,
-                                            question=str(pending_question.get("question", "")),
-                                            choices=pending_question.get("choices", []) or [],
-                                        )
-                                        logger.info(f"Sent ask_user popup with question_id={question_id}")
-                                    else:
-                                        logger.warning(f"ask_user returned {question_id} but pending question was not found")
-                                else:
-                                    logger.warning(f"ask_user output missing question_id: {tool_output}")
+                            # Skip ask_user from UI - now handled via LangGraph interrupts (not tool_end)
+                            # The question modal is sent when we detect __interrupt__ after stream completes
 
                             # Skip internal tools from UI
                             if tool_name not in ("task", "write_todos", "ask_user", "get_user_answer", "read_file", "write_file", "edit_file", "glob", "grep", "ls", "execute"):
@@ -737,6 +725,56 @@ async def constructor_websocket(
                         {"type": "stream_complete"}
                     )
 
+                    # Check for interrupts (ask_user tool pauses execution)
+                    # We need to invoke again to get the final state which may contain __interrupt__
+                    logger.info("Checking for interrupts after stream...")
+                    final_state = main_agent.get_state({"configurable": {"thread_id": thread_id}})
+
+                    logger.info(f"Final state keys: {final_state.values.keys() if final_state else 'None'}")
+                    logger.info(f"Final state next: {final_state.next if final_state else 'None'}")
+                    logger.info(f"Final state tasks: {final_state.tasks if final_state and hasattr(final_state, 'tasks') else 'None'}")
+
+                    # Check for interrupts in multiple possible locations
+                    interrupt_payload = None
+
+                    # Method 1: Check __interrupt__ in values
+                    if final_state and "__interrupt__" in final_state.values:
+                        interrupts = final_state.values["__interrupt__"]
+                        logger.info(f"Found interrupt in values.__interrupt__: {interrupts}")
+                        if interrupts and len(interrupts) > 0:
+                            interrupt_payload = interrupts[0].value if hasattr(interrupts[0], 'value') else interrupts[0]
+
+                    # Method 2: Check tasks for PregelTaskWrites with interrupts
+                    elif final_state and hasattr(final_state, 'tasks') and final_state.tasks:
+                        for task in final_state.tasks:
+                            if hasattr(task, 'interrupts') and task.interrupts:
+                                logger.info(f"Found interrupt in task.interrupts: {task.interrupts}")
+                                interrupt_payload = task.interrupts[0].value if hasattr(task.interrupts[0], 'value') else task.interrupts[0]
+                                break
+
+                    if interrupt_payload:
+                        logger.info(f"Interrupt detected! Payload: {interrupt_payload}")
+
+                        # Store interrupt state
+                        store_interrupt(thread_id, {
+                            "payload": interrupt_payload,
+                            "thread_id": thread_id,
+                        })
+
+                        # Send question to frontend
+                        await manager.broadcast_to_session(
+                            session_id,
+                            {
+                                "type": "question",
+                                "question": interrupt_payload.get("question", ""),
+                                "choices": interrupt_payload.get("choices", []),
+                                "thread_id": thread_id,  # Frontend needs this to resume
+                            }
+                        )
+                        logger.info("Question sent to frontend, waiting for user response...")
+                    else:
+                        logger.info("No interrupt detected in final state")
+
                     current_source = ""
                     mid_line = False
 
@@ -779,27 +817,141 @@ async def constructor_websocket(
                 )
 
             elif message_type == "question_answer":
-                # Handle user's response to a structured question
-                question_id = data.get("question_id")
+                # Handle user's response to a structured question (LangGraph interrupt/resume)
                 answer = data.get("answer")
-                answer_type = data.get("answer_type", "choice")  # "choice" or "other"
+                thread_id_from_frontend = data.get("thread_id")  # Frontend sends this back
 
-                logger.info(f"Received answer for question {question_id}: {answer} (type: {answer_type})")
+                logger.info(f"Received answer: {answer}, thread_id: {thread_id_from_frontend}")
 
-                # Submit the answer to the pending question
-                success = submit_user_answer(question_id, answer, answer_type)
+                # Get thread_id (either from frontend or from session)
+                if not thread_id_from_frontend:
+                    thread_id_from_frontend = get_or_create_thread(session_id)
 
-                if success:
-                    await manager.send_status(
-                        session_id,
-                        "Answer received. Processing...",
-                        phase="processing",
-                    )
-                else:
+                # Verify there's an active interrupt for this thread
+                interrupt_data = get_interrupt(thread_id_from_frontend)
+                if not interrupt_data:
+                    logger.error(f"No active interrupt found for thread {thread_id_from_frontend}")
                     await manager.send_error(
                         session_id,
-                        f"Question {question_id} not found or already expired",
+                        "No active question found. Please try again.",
                     )
+                    continue
+
+                # Add user's answer as a visible message in the chat
+                session = get_constructor_session(session_id)
+                session["messages"].append({
+                    "role": "user",
+                    "content": answer,
+                    "is_question_answer": True,  # Mark it as a question answer
+                })
+
+                # Send the answer as a user message to frontend (visible in chat)
+                await manager.send_token(
+                    session_id,
+                    answer,
+                    is_first=True,
+                    is_last=True,
+                    stream_id=f"{session_id}:answer:{time.time()}",
+                    metadata={"is_question_answer": True},  # Frontend can style it differently
+                )
+
+                await manager.send_status(
+                    session_id,
+                    "Processing your answer...",
+                    phase="processing",
+                )
+
+                # Resume agent execution with the answer
+                try:
+                    trace_config_resume = build_trace_config(
+                        thread_id=session_id,
+                        tags=["constructor", "websocket", "resume"],
+                        metadata={
+                            "endpoint": "/api/v1/constructor/session/ws/{session_id}",
+                            "session_id": session_id,
+                            "resuming_from_interrupt": True,
+                        },
+                        config={
+                            "recursion_limit": 1000,
+                            "configurable": {"thread_id": thread_id_from_frontend},
+                        },
+                    )
+
+                    # Clear the interrupt state
+                    clear_interrupt(thread_id_from_frontend)
+
+                    # Resume with Command(resume=answer)
+                    logger.info(f"Resuming agent with answer: {answer}")
+
+                    # Re-initialize tracking variables for the resumed stream
+                    current_subagent = None
+                    final_response_content = ""
+                    accumulated_tokens = ""
+                    stream_counter = 0
+                    active_subagents = {}
+                    pending_tools = {}
+
+                    # Stream the resumed execution
+                    async for event in main_agent.astream_events(
+                        Command(resume=answer),
+                        config=trace_config_resume,
+                        version="v1",
+                    ):
+                        # Process events exactly like the main message handler
+                        # (This is the same event processing loop as above)
+                        event_type = event.get("event")
+                        event_name = event.get("name", "")
+                        event_data = event.get("data", {})
+
+                        # [NOTE: The full event processing loop from the main handler should be extracted
+                        # into a helper function to avoid duplication. For now, we'll handle the critical
+                        # token streaming to get this working.]
+
+                        if event_type == "on_chat_model_stream":
+                            chunk = event_data.get("chunk")
+                            if chunk and hasattr(chunk, "content"):
+                                content = chunk.content
+                                if content:
+                                    if not accumulated_tokens:
+                                        await manager.send_token(session_id, content, is_first=True, stream_id=f"{session_id}:resume:{stream_counter}")
+                                    else:
+                                        await manager.send_token(session_id, content, stream_id=f"{session_id}:resume:{stream_counter}")
+                                    accumulated_tokens += content
+                                    final_response_content += content
+
+                    # Mark stream complete
+                    if accumulated_tokens:
+                        await manager.send_token(session_id, "", is_last=True, stream_id=f"{session_id}:resume:{stream_counter}")
+
+                    # Store assistant response
+                    if final_response_content:
+                        session["messages"].append({
+                            "role": "assistant",
+                            "content": final_response_content,
+                        })
+
+                    await manager.broadcast_to_session(session_id, {"type": "stream_complete"})
+
+                    # Check for additional interrupts (agent might ask another question)
+                    final_state_resume = main_agent.get_state({"configurable": {"thread_id": thread_id_from_frontend}})
+                    if final_state_resume and "__interrupt__" in final_state_resume.values:
+                        interrupts_resume = final_state_resume.values["__interrupt__"]
+                        if interrupts_resume and len(interrupts_resume) > 0:
+                            interrupt_payload_resume = interrupts_resume[0].value if hasattr(interrupts_resume[0], 'value') else interrupts_resume[0]
+                            store_interrupt(thread_id_from_frontend, {"payload": interrupt_payload_resume, "thread_id": thread_id_from_frontend})
+                            await manager.broadcast_to_session(
+                                session_id,
+                                {
+                                    "type": "question",
+                                    "question": interrupt_payload_resume.get("question", ""),
+                                    "choices": interrupt_payload_resume.get("choices", []),
+                                    "thread_id": thread_id_from_frontend,
+                                }
+                            )
+
+                except Exception as e:
+                    logger.error(f"Error resuming agent: {e}", exc_info=True)
+                    await manager.send_error(session_id, f"Error processing your answer: {str(e)}")
 
             elif message_type == "upload":
                 # Handle file upload notification

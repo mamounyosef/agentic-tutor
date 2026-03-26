@@ -24,6 +24,11 @@ import {
   Sparkles,
   Menu,
   X,
+  ChevronDown,
+  ChevronUp,
+  Copy,
+  Check,
+  Brain,
 } from "lucide-react"
 import { useAuthStore } from "@/lib/store"
 import { tutorApi } from "@/lib/api"
@@ -34,7 +39,7 @@ interface Message {
   id: string
   role: "user" | "assistant"
   content: string
-  timestamp: Date
+  timestamp: Date | string
   isStreaming?: boolean
 }
 
@@ -52,6 +57,7 @@ interface QuizQuestion {
 }
 
 export default function StudentLearnPage({ params }: { params: { courseId: string } }) {
+  console.log("🚀 StudentLearnPage RENDERING - Component is loaded!")
   const router = useRouter()
   const { studentToken, studentId, logout, _hasHydrated } = useAuthStore()
   const courseId = parseInt(params.courseId)
@@ -68,6 +74,9 @@ export default function StudentLearnPage({ params }: { params: { courseId: strin
   const [masteryScore, setMasteryScore] = useState(0)
   const [activeQuiz, setActiveQuiz] = useState<QuizQuestion | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [quizCollapsed, setQuizCollapsed] = useState(false)
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null)
+  const [agentStatus, setAgentStatus] = useState<"idle" | "thinking" | "typing">("idle")
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const wsRef = useRef<WebSocket | null>(null)
@@ -120,6 +129,25 @@ export default function StudentLearnPage({ params }: { params: { courseId: strin
     textarea.addEventListener('input', resize)
     return () => textarea.removeEventListener('input', resize)
   }, [inputMessage])
+
+  // Auto-expand quiz when new question arrives
+  useEffect(() => {
+    if (activeQuiz) {
+      setQuizCollapsed(false)
+    }
+  }, [activeQuiz])
+
+  // Update agent status based on activity
+  useEffect(() => {
+    const lastMessage = messages[messages.length - 1]
+    if (lastMessage?.isStreaming) {
+      setAgentStatus("typing")
+    } else if (isLoading) {
+      setAgentStatus("thinking")
+    } else {
+      setAgentStatus("idle")
+    }
+  }, [isLoading, messages])
 
   const initializeSession = async () => {
     const requestId = ++initRequestIdRef.current
@@ -205,6 +233,7 @@ export default function StudentLearnPage({ params }: { params: { courseId: strin
 
     wsRef.current.onmessage = (event) => {
       const data = JSON.parse(event.data)
+      console.log("🔔 WebSocket message received:", data.type, data)
 
       if (data.type === "token") {
         const isFirst = Boolean(data.metadata?.is_first)
@@ -258,7 +287,9 @@ export default function StudentLearnPage({ params }: { params: { courseId: strin
           setCurrentTopic(data.metadata.topic)
         }
       } else if (data.type === "quiz") {
+        console.log("❓ QUIZ RECEIVED:", data.question)
         setActiveQuiz(data.question)
+        console.log("❓ activeQuiz state should now be set")
       } else if (data.type === "mastery_update") {
         if (data.mastery) {
           const topicList = Object.entries(data.mastery).map(([id, score]) => ({
@@ -364,6 +395,31 @@ export default function StudentLearnPage({ params }: { params: { courseId: strin
     if (mastery >= 0.8) return "bg-green-500"
     if (mastery >= 0.5) return "bg-yellow-500"
     return "bg-red-500"
+  }
+
+  const getRelativeTime = (date: Date | string) => {
+    const now = new Date()
+    const messageDate = typeof date === 'string' ? new Date(date) : date
+    const seconds = Math.floor((now.getTime() - messageDate.getTime()) / 1000)
+
+    if (seconds < 60) return "just now"
+    const minutes = Math.floor(seconds / 60)
+    if (minutes < 60) return `${minutes}m ago`
+    const hours = Math.floor(minutes / 60)
+    if (hours < 24) return `${hours}h ago`
+    const days = Math.floor(hours / 24)
+    return `${days}d ago`
+  }
+
+  const handleCopyMessage = async (messageId: string, content: string) => {
+    try {
+      await navigator.clipboard.writeText(content)
+      setCopiedMessageId(messageId)
+      setTimeout(() => setCopiedMessageId(null), 2000)
+      toast.success("Copied to clipboard")
+    } catch (error) {
+      toast.error("Failed to copy")
+    }
   }
 
   // Show loading while store hydrates from localStorage
@@ -510,12 +566,42 @@ export default function StudentLearnPage({ params }: { params: { courseId: strin
           {/* Main Chat Area */}
           <div className="lg:col-span-3">
             <Card className="h-full flex flex-col glass">
-              {/* Current Topic Indicator */}
-              {currentTopic && (
-                <div className="px-4 py-2 border-b border-border/50 bg-primary/5">
-                  <div className="flex items-center gap-2 text-sm">
-                    <Sparkles className="w-4 h-4 text-primary" />
-                    <span className="text-primary font-medium">Learning: {currentTopic}</span>
+              {/* Current Topic Indicator & Agent Status */}
+              {(currentTopic || agentStatus !== "idle") && (
+                <div className="px-4 py-2 border-b border-border/50 bg-gradient-to-r from-primary/5 to-purple-500/5">
+                  <div className="flex items-center justify-between gap-2 text-sm">
+                    {currentTopic ? (
+                      <div className="flex items-center gap-2">
+                        <Sparkles className="w-4 h-4 text-primary" />
+                        <span className="text-primary font-medium">Learning: {currentTopic}</span>
+                      </div>
+                    ) : (
+                      <div />
+                    )}
+
+                    {/* Agent Status Badge */}
+                    {agentStatus !== "idle" && (
+                      <Badge
+                        variant="secondary"
+                        className={cn(
+                          "gap-1.5 transition-all",
+                          agentStatus === "thinking" && "bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/20",
+                          agentStatus === "typing" && "bg-primary/10 text-primary border-primary/20"
+                        )}
+                      >
+                        {agentStatus === "thinking" ? (
+                          <>
+                            <Brain className="w-3 h-3 animate-pulse" />
+                            <span>Thinking...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                            <span>Typing...</span>
+                          </>
+                        )}
+                      </Badge>
+                    )}
                   </div>
                 </div>
               )}
@@ -524,20 +610,23 @@ export default function StudentLearnPage({ params }: { params: { courseId: strin
                 {/* Messages */}
                 <ScrollArea className="flex-1 p-4">
                   <div className="space-y-6">
-                    {messages.map((message) => (
+                    {console.log("📧 RENDERING MESSAGES - Count:", messages.length)}
+                    {messages.map((message) => {
+                      console.log("💬 Rendering message:", message.id, "Role:", message.role, "Has timestamp:", !!message.timestamp)
+                      return (
                       <div
                         key={message.id}
                         className={cn(
-                          "flex animate-fade-in",
-                          message.role === "user" ? "justify-end" : "justify-start"
+                          "flex flex-col gap-1 animate-in slide-in-from-bottom-2 duration-300",
+                          message.role === "user" ? "items-end" : "items-start"
                         )}
                       >
                         <div
                           className={cn(
-                            "max-w-[80%] rounded-2xl px-4 py-3",
+                            "group relative max-w-[80%] rounded-2xl px-4 py-3 transition-all hover:scale-[1.01]",
                             message.role === "user"
-                              ? "bg-gradient-to-r from-primary to-purple-600 text-white rounded-br-sm shadow-lg shadow-primary/25"
-                              : "bg-muted text-foreground rounded-bl-sm"
+                              ? "bg-gradient-to-r from-primary to-purple-600 text-white rounded-br-sm shadow-lg shadow-primary/25 hover:shadow-primary/40"
+                              : "bg-muted text-foreground rounded-bl-sm hover:bg-muted/80"
                           )}
                         >
                           {message.role === "assistant" ? (
@@ -548,67 +637,124 @@ export default function StudentLearnPage({ params }: { params: { courseId: strin
                           {message.isStreaming && (
                             <span className="inline-block w-1 h-4 bg-current animate-pulse ml-1" />
                           )}
+
+                          {/* Copy button - VERY VISIBLE FOR TESTING */}
+                          {message.role === "assistant" && !message.isStreaming && (
+                            <button
+                              className="absolute top-0 right-0 bg-red-500 text-white px-4 py-2 text-xs font-bold rounded"
+                              onClick={() => {
+                                console.log("COPY BUTTON CLICKED!")
+                                handleCopyMessage(message.id, message.content)
+                              }}
+                            >
+                              COPY ME!
+                            </button>
+                          )}
+                        </div>
+
+                        {/* Timestamp - VERY VISIBLE FOR TESTING */}
+                        <div className={cn(
+                          "text-sm font-bold bg-yellow-300 text-black px-3 py-1 rounded",
+                          message.role === "user" ? "text-right" : "text-left"
+                        )}>
+                          TIMESTAMP: {message.timestamp ? String(new Date()) : "NO TIMESTAMP"}
                         </div>
                       </div>
-                    ))}
-                    {isLoading && (
-                      <div className="flex justify-start">
-                        <div className="max-w-[80%] rounded-2xl px-4 py-3 bg-muted">
-                          <div className="flex gap-1">
-                            <span className="typing-dot" />
-                            <span className="typing-dot" />
-                            <span className="typing-dot" />
+                    )
+                    })}
+                    {isLoading && agentStatus === "thinking" && (
+                      <div className="flex flex-col gap-1 items-start animate-in slide-in-from-bottom-2 duration-300">
+                        <div className="max-w-[80%] rounded-2xl px-5 py-3.5 bg-gradient-to-r from-muted to-muted/80 rounded-bl-sm shadow-sm">
+                          <div className="flex items-center gap-2">
+                            <Brain className="w-4 h-4 text-amber-500 animate-pulse" />
+                            <div className="flex gap-1.5">
+                              <span className="typing-dot bg-amber-500/60" style={{ animationDelay: "0ms" }} />
+                              <span className="typing-dot bg-amber-500/60" style={{ animationDelay: "150ms" }} />
+                              <span className="typing-dot bg-amber-500/60" style={{ animationDelay: "300ms" }} />
+                            </div>
                           </div>
                         </div>
+                        <span className="text-xs text-muted-foreground px-2">just now</span>
                       </div>
                     )}
                   </div>
                   <div ref={messagesEndRef} />
                 </ScrollArea>
 
-                {/* Quiz Section */}
+                {/* Quiz Section - Collapsible */}
+                {console.log("🎯 Checking activeQuiz:", activeQuiz, "Collapsed:", quizCollapsed)}
                 {activeQuiz && (
-                  <div className="p-4 border-t border-border/50 bg-muted/30">
-                    <div className="space-y-3">
+                  <div className="border-t border-border/50 bg-gradient-to-b from-primary/5 to-muted/30" style={{ border: "5px solid red" }}>
+                    {/* Header - Always Visible */}
+                    <div
+                      className="px-4 py-3 flex items-center justify-between cursor-pointer hover:bg-muted/20 transition-colors"
+                      onClick={() => setQuizCollapsed(!quizCollapsed)}
+                    >
                       <div className="flex items-center gap-2 text-sm font-medium">
                         <MessageSquare className="w-4 h-4 text-primary" />
-                        Quiz Time!
+                        <span className="text-primary">Quiz Time!</span>
+                        {quizCollapsed && (
+                          <Badge variant="secondary" className="ml-2 text-xs">
+                            Click to expand
+                          </Badge>
+                        )}
                       </div>
-                      <p className="text-sm">{activeQuiz.question_text}</p>
-
-                      {activeQuiz.question_type === "multiple_choice" && activeQuiz.options && (
-                        <div className="space-y-2">
-                          {activeQuiz.options.map((option, index) => (
-                            <Button
-                              key={index}
-                              variant="outline"
-                              className="w-full justify-start h-auto py-3 px-4"
-                              onClick={() => handleQuizAnswer(option.value)}
-                            >
-                              {option.text}
-                            </Button>
-                          ))}
-                        </div>
-                      )}
-
-                      {activeQuiz.question_type === "true_false" && (
-                        <div className="flex gap-3">
-                          <Button
-                            className="flex-1"
-                            onClick={() => handleQuizAnswer("true")}
-                          >
-                            True
-                          </Button>
-                          <Button
-                            variant="outline"
-                            className="flex-1"
-                            onClick={() => handleQuizAnswer("false")}
-                          >
-                            False
-                          </Button>
-                        </div>
-                      )}
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 shrink-0"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setQuizCollapsed(!quizCollapsed)
+                        }}
+                      >
+                        {quizCollapsed ? (
+                          <ChevronDown className="w-4 h-4" />
+                        ) : (
+                          <ChevronUp className="w-4 h-4" />
+                        )}
+                      </Button>
                     </div>
+
+                    {/* Question Content - Collapsible */}
+                    {!quizCollapsed && (
+                      <div className="px-4 pb-4 space-y-3 animate-in slide-in-from-top-2 duration-200">
+                        <p className="text-sm font-medium">{activeQuiz.question_text}</p>
+
+                        {activeQuiz.question_type === "multiple_choice" && activeQuiz.options && (
+                          <div className="space-y-2">
+                            {activeQuiz.options.map((option, index) => (
+                              <Button
+                                key={index}
+                                variant="outline"
+                                className="w-full justify-start h-auto py-3 px-4 hover:bg-primary/10 hover:border-primary transition-colors"
+                                onClick={() => handleQuizAnswer(option.value)}
+                              >
+                                {option.text}
+                              </Button>
+                            ))}
+                          </div>
+                        )}
+
+                        {activeQuiz.question_type === "true_false" && (
+                          <div className="flex gap-3">
+                            <Button
+                              className="flex-1"
+                              onClick={() => handleQuizAnswer("true")}
+                            >
+                              True
+                            </Button>
+                            <Button
+                              variant="outline"
+                              className="flex-1"
+                              onClick={() => handleQuizAnswer("false")}
+                            >
+                              False
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
 
